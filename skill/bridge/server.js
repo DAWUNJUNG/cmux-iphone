@@ -649,14 +649,27 @@ async function startServer() {
   // This allows the bridge to start independently of any Claude session.
   log("info", "Bridge ready. PTY will spawn when first command is received.");
 
+  // Get LAN IP for watch pairing
+  const interfaces = os.networkInterfaces();
+  let lanIP = "127.0.0.1";
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    for (const addr of addrs) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        lanIP = addr.address;
+        break;
+      }
+    }
+    if (lanIP !== "127.0.0.1") break;
+  }
+
   // Print pairing info prominently
   console.log("");
   console.log("╔═══════════════════════════════════════╗");
   console.log("║        CLAUDE WATCH BRIDGE            ║");
   console.log("╠═══════════════════════════════════════╣");
   console.log(`║  Pairing Code:  ${code}                ║`);
+  console.log(`║  IP Address:    ${lanIP.padEnd(20)}║`);
   console.log(`║  Port:          ${String(boundPort).padEnd(20)}║`);
-  console.log(`║  Session:       ${SESSION_ID.slice(0, 20)}… ║`);
   console.log("╚═══════════════════════════════════════╝");
   console.log("");
 
