@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="photo.png" width="600" alt="Claude Watch on Apple Watch" />
+  <video src="recording.mp4" width="350" autoplay loop muted playsinline></video>
 </p>
 
 ---
