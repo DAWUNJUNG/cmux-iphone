@@ -7,7 +7,10 @@ struct PairingView: View {
     // MARK: - State
 
     @State private var code: String = ""
-    @FocusState private var isFieldFocused: Bool
+    @State private var ipAddress: String = ""
+    @State private var showManualIP: Bool = false
+    @FocusState private var isCodeFocused: Bool
+    @FocusState private var isIPFocused: Bool
     @State private var shakeOffset: CGFloat = 0
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
@@ -24,16 +27,18 @@ struct PairingView: View {
 
                 mascotIcon
                 titleSection
+
+                if showManualIP {
+                    ipEntrySection
+                }
+
                 digitFields
                 statusSection
-                bottomInstruction
+                bottomSection
 
                 Spacer()
             }
             .padding(.horizontal, 32)
-        }
-        .onTapGesture {
-            isFieldFocused = true
         }
     }
 
@@ -49,10 +54,32 @@ struct PairingView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(Color.claudeOrange)
 
-            Text("Enter the pairing code from your Mac")
+            Text(showManualIP
+                 ? "Enter your Mac's IP and the pairing code"
+                 : "Enter the pairing code from your Mac")
                 .font(.system(size: 15))
                 .foregroundStyle(Color.subtleText)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    private var ipEntrySection: some View {
+        HStack(spacing: 8) {
+            TextField("192.168.1.x", text: $ipAddress)
+                .keyboardType(.decimalPad)
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+                .tint(Color.claudeOrange)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.fieldBorder, lineWidth: 1)
+                )
+                .focused($isIPFocused)
         }
     }
 
@@ -62,7 +89,7 @@ struct PairingView: View {
             TextField("", text: $code)
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
-                .focused($isFieldFocused)
+                .focused($isCodeFocused)
                 .foregroundStyle(.clear)
                 .tint(.clear)
                 .accentColor(.clear)
@@ -77,7 +104,7 @@ struct PairingView: View {
                 ForEach(0..<6, id: \.self) { index in
                     DigitBox(
                         character: digitAt(index),
-                        isActive: index == code.count && isFieldFocused && !isConnecting,
+                        isActive: index == code.count && isCodeFocused && !isConnecting,
                         isError: showError,
                         isDisabled: isConnecting
                     )
@@ -86,11 +113,13 @@ struct PairingView: View {
             .offset(x: shakeOffset)
             .contentShape(Rectangle())
             .onTapGesture {
-                isFieldFocused = true
+                isCodeFocused = true
             }
         }
         .onAppear {
-            isFieldFocused = true
+            if !showManualIP {
+                isCodeFocused = true
+            }
         }
     }
 
@@ -115,12 +144,27 @@ struct PairingView: View {
         }
     }
 
-    private var bottomInstruction: some View {
-        Text("Run `node server.js` in the bridge folder to start")
-            .font(.system(size: 13, design: .monospaced))
-            .foregroundStyle(Color.subtleText)
-            .multilineTextAlignment(.center)
-            .padding(.bottom, 16)
+    private var bottomSection: some View {
+        VStack(spacing: 12) {
+            if !showManualIP {
+                Button {
+                    withAnimation {
+                        showManualIP = true
+                        isIPFocused = true
+                    }
+                } label: {
+                    Text("Can't connect? Enter IP manually")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.claudeOrange)
+                }
+            }
+
+            Text("Run `node server.js` in the bridge folder to start")
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(Color.subtleText)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.bottom, 16)
     }
 
     // MARK: - Logic
@@ -131,13 +175,11 @@ struct PairingView: View {
     }
 
     private func handleCodeChange(_ newValue: String) {
-        // Only allow digits, max 6
         let filtered = String(newValue.filter { $0.isNumber }.prefix(6))
         if filtered != code {
             code = filtered
         }
 
-        // Clear error state on new input
         if showError {
             withAnimation(.easeOut(duration: 0.2)) {
                 showError = false
@@ -145,7 +187,6 @@ struct PairingView: View {
             }
         }
 
-        // Auto-submit when all 6 digits entered
         if code.count == 6 && !isConnecting {
             submitCode(code)
         }
@@ -153,21 +194,36 @@ struct PairingView: View {
 
     private func submitCode(_ code: String) {
         isConnecting = true
-        isFieldFocused = false
+        isCodeFocused = false
+        isIPFocused = false
 
         Task {
             do {
-                try await relayService.pair(code: code)
-                print("[PairingView] Pair succeeded, isPaired=\(relayService.isPaired)")
-            } catch let error as BridgeClient.BridgeError {
-                print("[PairingView] BridgeError: \(error)")
-                await MainActor.run {
-                    handlePairingError(error)
+                if showManualIP {
+                    let ip = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !ip.isEmpty else {
+                        await MainActor.run {
+                            showPairingError("Please enter your Mac's IP address.")
+                        }
+                        return
+                    }
+                    try await relayService.pairWithIP(ip, code: code)
+                } else {
+                    try await relayService.pair(code: code)
                 }
+            } catch let error as BridgeClient.BridgeError {
+                await MainActor.run { handlePairingError(error) }
             } catch {
-                print("[PairingView] Error: \(error)")
                 await MainActor.run {
-                    showPairingError("Connection failed: \(error.localizedDescription)")
+                    let msg = error.localizedDescription
+                    // If auto-discovery failed, suggest manual IP
+                    if msg.contains("noServiceFound") || msg.contains("timed out") || msg.contains("not found") {
+                        showManualIP = true
+                        showPairingError("Bridge not found automatically. Enter your Mac's IP address.")
+                        isIPFocused = true
+                    } else {
+                        showPairingError("Connection failed: \(msg)")
+                    }
                 }
             }
         }
@@ -183,7 +239,13 @@ struct PairingView: View {
         case .rateLimited:
             showPairingError("Too many attempts. Please wait a few minutes.")
         case .networkError:
-            showPairingError("Cannot reach the bridge server. Check your network.")
+            if !showManualIP {
+                showManualIP = true
+                showPairingError("Can't reach bridge. Enter your Mac's IP address.")
+                isIPFocused = true
+            } else {
+                showPairingError("Cannot reach the bridge server. Check the IP and network.")
+            }
         case .serverError(let msg):
             showPairingError(msg)
         }
@@ -197,7 +259,11 @@ struct PairingView: View {
         }
         code = ""
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            isFieldFocused = true
+            if showManualIP && ipAddress.isEmpty {
+                isIPFocused = true
+            } else {
+                isCodeFocused = true
+            }
         }
     }
 

@@ -111,6 +111,30 @@ final class RelayService: ObservableObject {
         updateWatchState()
     }
 
+    /// Pairs using a manual IP address (fallback when Bonjour fails on real devices).
+    func pairWithIP(_ ip: String, code: String) async throws {
+        print("[RelayService] Manual IP pair: \(ip), code: \(code)")
+
+        let service = try await discovery.discoverAtIP(ip)
+        bridgeClient.configure(host: service.host, port: service.port)
+
+        try await bridgeClient.pair(code: code)
+
+        machineName = service.machineName
+        lastConnected = Date()
+        isPaired = true
+        connectionState = .connected
+
+        UserDefaults.standard.set(service.host, forKey: "bridge_host")
+        UserDefaults.standard.set(Int(service.port), forKey: "bridge_port")
+        UserDefaults.standard.set(service.machineName, forKey: "paired_machine_name")
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "last_connected")
+
+        startEventStream()
+        startElapsedTimer()
+        updateWatchState()
+    }
+
     /// Removes pairing and disconnects.
     func unpair() {
         sseClient.disconnect()

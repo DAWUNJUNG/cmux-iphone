@@ -45,19 +45,46 @@ final class BonjourDiscovery: ObservableObject {
     // MARK: - Discovery
 
     /// Searches for the bridge service on LAN with a 5-second timeout.
-    /// Falls back to localhost:7860 if Bonjour fails (common on simulator).
+    /// Falls back to localhost on simulator only.
     @MainActor
     func discover() async throws -> DiscoveredService {
         isSearching = true
         defer { isSearching = false }
 
-        // Try Bonjour first, fall back to localhost
         do {
             return try await bonjourDiscover()
         } catch {
-            print("[BonjourDiscovery] Bonjour failed (\(error.localizedDescription)), trying localhost fallback...")
+            print("[BonjourDiscovery] Bonjour failed (\(error.localizedDescription))")
+            #if targetEnvironment(simulator)
+            print("[BonjourDiscovery] Trying localhost fallback (simulator)...")
             return try await localhostFallback()
+            #else
+            throw error
+            #endif
         }
+    }
+
+    /// Tries to connect to a specific IP on ports 7860-7869.
+    func discoverAtIP(_ ip: String) async throws -> DiscoveredService {
+        for port in UInt16(7860)...UInt16(7869) {
+            let url = URL(string: "http://\(ip):\(port)/status")!
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                    return DiscoveredService(
+                        name: ip,
+                        host: ip,
+                        port: port,
+                        machineName: ip
+                    )
+                }
+            } catch {
+                continue
+            }
+        }
+        throw DiscoveryError.noServiceFound
     }
 
     /// Tries to connect to localhost:7860-7869 directly.
