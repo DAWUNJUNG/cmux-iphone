@@ -9,8 +9,6 @@ struct ConnectionStatusView: View {
 
     @State private var showSettings = false
     @State private var activeSessionIndex = 0
-    @State private var commandText = ""
-    @FocusState private var isCommandFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -50,8 +48,6 @@ struct ConnectionStatusView: View {
                             .padding(.leading, 26)
                             .padding(.bottom, 16)
                         }
-
-                        commandInputBar
                     }
                 }
             }
@@ -136,46 +132,6 @@ struct ConnectionStatusView: View {
         .indexViewStyle(.page(backgroundDisplayMode: .interactive))
     }
 
-    // MARK: - Command input bar (outside TabView)
-
-    private var commandInputBar: some View {
-        HStack(spacing: 8) {
-            TextField("Send a command...", text: $commandText)
-                .font(.system(size: 15, design: .monospaced))
-                .foregroundStyle(.white)
-                .tint(Color.claudeOrange)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .focused($isCommandFocused)
-                .onSubmit { submitCommand() }
-
-            Button { submitCommand() } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(commandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? Color.subtleText
-                        : Color.claudeOrange)
-            }
-            .disabled(commandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color.black)
-    }
-
-    // MARK: - Helpers
-
-    private func submitCommand() {
-        let text = commandText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let sessionId = relayService.sessions.indices.contains(activeSessionIndex)
-            ? relayService.sessions[activeSessionIndex].id
-            : nil
-        relayService.sendCommand(text: text, sessionId: sessionId)
-        commandText = ""
-    }
 }
 
 // MARK: - Session Page View
@@ -185,6 +141,8 @@ private struct SessionPageView: View {
     @EnvironmentObject private var relayService: RelayService
 
     @State private var cursorVisible = true
+    @State private var promptText = ""
+    @FocusState private var isPromptFocused: Bool
 
     private let cursorTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
@@ -280,6 +238,7 @@ private struct SessionPageView: View {
             ForEach(Array(approval.options.enumerated()), id: \.element.id) { index, option in
                 Button {
                     relayService.respondToApprovalWithOption(option.label, index: index)
+                    promptText = ""
                 } label: {
                     HStack(spacing: 8) {
                         Text("\(index + 1).")
@@ -311,6 +270,31 @@ private struct SessionPageView: View {
                     )
                 }
                 .buttonStyle(.plain)
+            }
+
+            // Text input for custom response
+            if approval.question != nil {
+                HStack(spacing: 8) {
+                    TextField("Type a response...", text: $promptText)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .tint(Color.claudeOrange)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.black.opacity(0.3))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .focused($isPromptFocused)
+                        .onSubmit { submitPromptText() }
+
+                    Button { submitPromptText() } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundStyle(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? Color.subtleText
+                                : Color.claudeOrange)
+                    }
+                    .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
         }
         .padding(12)
@@ -356,6 +340,14 @@ private struct SessionPageView: View {
         .frame(maxWidth: .infinity)
         .background(Color.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func submitPromptText() {
+        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        relayService.respondToApprovalWithOption(text, index: -1)
+        promptText = ""
+        isPromptFocused = false
     }
 
     private func colorForOption(_ index: Int, total: Int) -> Color {
