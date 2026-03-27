@@ -86,6 +86,18 @@ class WatchViewState: ObservableObject {
         sessions.firstIndex(where: { $0.id == id })
     }
 
+    private func removeThinkingLine(sessionId: String?) {
+        // Remove from legacy flat list
+        if terminalLines.last?.type == .thinking {
+            terminalLines.removeLast()
+        }
+        // Remove from specific session
+        if let sid = sessionId, let idx = sessionIndex(for: sid),
+           sessions[idx].terminalLines.last?.type == .thinking {
+            sessions[idx].terminalLines.removeLast()
+        }
+    }
+
     // MARK: - Event stream (SSE from bridge)
 
     func startEventStream() {
@@ -165,6 +177,7 @@ class WatchViewState: ObservableObject {
             handlePermissionRequest(json, sessionId: sessionId)
 
         case "stop":
+            removeThinkingLine(sessionId: sessionId)
             appendLine(TerminalLine(text: "— stopped —", type: .system), sessionId: sessionId)
             isStreaming = false
             if let sid = sessionId, let idx = sessionIndex(for: sid) {
@@ -199,6 +212,9 @@ class WatchViewState: ObservableObject {
     // MARK: - Event handlers
 
     private func handleToolOutput(_ json: [String: Any], sessionId: String?) {
+        // Remove previous thinking indicator before adding new content
+        removeThinkingLine(sessionId: sessionId)
+
         let toolName = json["tool_name"] as? String ?? "tool"
         let toolInput = json["tool_input"] as? [String: Any] ?? [:]
         let source = json["source"] as? String ?? "claude"
@@ -237,6 +253,9 @@ class WatchViewState: ObservableObject {
             appendLine(TerminalLine(text: "\(prefix)[\(toolName)]", type: .system), sessionId: sessionId)
         }
         isStreaming = true
+
+        // Add thinking indicator — will be removed when next event arrives
+        appendLine(TerminalLine(text: "", type: .thinking), sessionId: sessionId)
     }
 
     private func handlePermissionRequest(_ json: [String: Any], sessionId: String?) {

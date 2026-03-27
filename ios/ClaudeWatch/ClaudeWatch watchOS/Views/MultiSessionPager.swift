@@ -33,3 +33,9 @@ struct MultiSessionPager: View {
         .background(Color.black)
     }
 }
+
+#Preview("Waiting") {
+    MultiSessionPager()
+        .environmentObject(WatchViewState.shared)
+}
+

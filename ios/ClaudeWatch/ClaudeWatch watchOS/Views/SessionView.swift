@@ -127,6 +127,41 @@ struct SessionView: View {
     }
 }
 
+#Preview {
+    let session = {
+        var s = AgentSession(
+            id: "preview-1",
+            agent: .claude,
+            cwd: "/Users/shobhit/projects/benchyy",
+            folderName: "benchyy",
+            activity: .running
+        )
+        s.terminalLines = [
+            TerminalLine(text: "⏺ Reading project structure...", type: .system, sessionId: "preview-1"),
+            TerminalLine(text: "$ find . -name '*.swift' | head -20", type: .command, sessionId: "preview-1"),
+            TerminalLine(text: "./Sources/App/Models/Session.swift", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "./Sources/App/Views/SessionView.swift", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "./Sources/App/Views/DashboardView.swift", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "./Tests/SessionTests.swift", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "⏺ Read Sources/App/Models/Session.swift", type: .system, sessionId: "preview-1"),
+            TerminalLine(text: "Found 3 models: Session, Workout, Metric", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "⏺ Edit Sources/App/Views/SessionView.swift", type: .system, sessionId: "preview-1"),
+            TerminalLine(text: "Added live heart rate overlay with", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "  animation and haptic feedback", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "> looks good, now add the timer", type: .command, sessionId: "preview-1"),
+            TerminalLine(text: "⏺ Edit Sources/App/Views/SessionView.swift", type: .system, sessionId: "preview-1"),
+            TerminalLine(text: "Added elapsed timer with .monospacedDigit", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "$ swift build 2>&1 | tail -3", type: .command, sessionId: "preview-1"),
+            TerminalLine(text: "Build complete! (4.2s)", type: .output, sessionId: "preview-1"),
+            TerminalLine(text: "", type: .thinking, sessionId: "preview-1"),
+        ]
+        return s
+    }()
+
+    SessionView(agentSession: session)
+        .environmentObject(WatchViewState.shared)
+}
+
 struct PulseModifier: ViewModifier {
     @State private var isPulsing = false
     func body(content: Content) -> some View {

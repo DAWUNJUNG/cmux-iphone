@@ -488,8 +488,46 @@ async function handleCommand(req, res) {
 
     if (sessionId) {
       targetSession = sessions.get(sessionId);
-      if (!targetSession || !targetSession.ptyProcess) {
-        return jsonResponse(res, 404, { error: "No active session with that ID" });
+      if (targetSession && !targetSession.ptyProcess) {
+        // Session exists but has no PTY (external hook-created session).
+        // Spawn a PTY in that session's cwd so the watch can interact.
+        log("info", `Session ${sessionId} has no PTY — spawning ${targetSession.agent} in ${targetSession.cwd}`);
+        const bin = targetSession.agent === "codex" ? CODEX_BIN : CLAUDE_BIN;
+        if (bin) {
+          const cols = parseInt(process.env.COLUMNS, 10) || 120;
+          const rows = parseInt(process.env.LINES, 10) || 40;
+          const proc = childSpawn("script", ["-q", "/dev/null", bin], {
+            cwd: targetSession.cwd,
+            env: { ...process.env, TERM: "xterm-256color", COLUMNS: String(cols), LINES: String(rows) },
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          targetSession.ptyProcess = proc;
+          proc.stdout.on("data", (data) => pushSseEvent("pty-output", { text: data.toString() }, sessionId));
+          proc.stderr.on("data", (data) => pushSseEvent("pty-output", { text: data.toString() }, sessionId));
+          proc.on("close", (exitCode, signal) => {
+            targetSession.state = "ended";
+            targetSession.ptyProcess = null;
+            pushSseEvent("session", { state: "ended", exitCode, signal, agent: targetSession.agent, folderName: targetSession.folderName }, sessionId);
+          });
+          proc.on("error", (err) => {
+            targetSession.state = "ended";
+            targetSession.ptyProcess = null;
+            pushSseEvent("session", { state: "ended", error: err.message, agent: targetSession.agent, folderName: targetSession.folderName }, sessionId);
+          });
+          log("info", `Attached PTY to session ${sessionId}, pid: ${proc.pid}`);
+          // Wait for PTY to init, then write command
+          setTimeout(() => {
+            if (targetSession.ptyProcess) {
+              targetSession.ptyProcess.stdin.write(command);
+              log("info", `Command injected into session ${sessionId} (${command.length} chars)`);
+            }
+          }, 500);
+          return jsonResponse(res, 200, { ok: true, sessionId, agent: targetSession.agent, spawned: true });
+        }
+        return jsonResponse(res, 500, { error: `No binary found for ${targetSession.agent}` });
+      }
+      if (!targetSession) {
+        return jsonResponse(res, 404, { error: "No session with that ID" });
       }
     } else {
       // Backward compat: route to the most recent active session
@@ -556,6 +594,24 @@ function handleEvents(req, res) {
 
   sseClients.add(res);
   log("info", `SSE client connected (total: ${sseClients.size})`);
+
+  // Send current sessions state so late-connecting clients see existing sessions
+  for (const [sid, slot] of sessions) {
+    if (slot.state === "running") {
+      const syncEntry = formatSseMessage({
+        id: sseEventId++,
+        event: "session",
+        data: JSON.stringify({
+          state: "running",
+          agent: slot.agent,
+          cwd: slot.cwd,
+          folderName: slot.folderName,
+          sessionId: sid,
+        }),
+      });
+      try { res.write(syncEntry); } catch { /* ignore */ }
+    }
+  }
 
   const heartbeat = setInterval(() => {
     try {
