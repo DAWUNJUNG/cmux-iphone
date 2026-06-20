@@ -120,6 +120,9 @@ const sseClients = new Set();
 const pendingPermissions = new Map();
 /** @type {Map<string, Array>} */
 const pendingPermissionBodies = new Map();
+/** Full permission-request payloads kept until resolved — re-sent to clients
+ *  that (re)connect, so a backgrounded/reconnecting phone never misses one. */
+const pendingPermissionPayloads = new Map();
 /** @type {Map<string, {offset: number, remainder: string, sessionId: string | null, cwd?: string, createdAt?: number, initialized: boolean}>} */
 const codexSessionFiles = new Map();
 /** @type {Map<string, {sessionId: string, name: string, args: Record<string, any>}>} */
@@ -982,10 +985,19 @@ function stopCodexMonitor() {
 // Permission flow
 // ---------------------------------------------------------------------------
 
+// Forget a permission everywhere and tell clients to drop its card.
+function clearPermissionState(permissionId, reason) {
+  const stored = pendingPermissionPayloads.get(permissionId);
+  pendingPermissionPayloads.delete(permissionId);
+  pendingPermissionBodies.delete(permissionId);
+  pushSseEvent("permission-cleared", { permissionId, reason }, stored ? stored.sessionId : null);
+}
+
 function waitForPermission(permissionId) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pendingPermissions.delete(permissionId);
+      clearPermissionState(permissionId, "timeout"); // notify clients + free memory
       log("warn", `Permission ${permissionId} timed out after ${PERMISSION_TIMEOUT_MS / 1000}s, auto-denying`);
       resolve({ behavior: "deny", reason: "Timed out waiting for watch response" });
     }, PERMISSION_TIMEOUT_MS);
@@ -1000,6 +1012,7 @@ function resolvePermission(permissionId, decision) {
   clearTimeout(pending.timer);
   pendingPermissions.delete(permissionId);
   pending.resolve(decision);
+  clearPermissionState(permissionId, "resolved"); // clear card on other devices + free memory
   return true;
 }
 
@@ -1297,6 +1310,13 @@ function handleEvents(req, res) {
   bridgeState = "connected";
   log("info", `SSE client connected (total: ${sseClients.size})`);
 
+  // Re-send still-pending approvals so a reconnecting / backgrounded client
+  // never misses one (the ring buffer may have rotated past the original).
+  for (const payload of pendingPermissionPayloads.values()) {
+    sseEventId++;
+    res.write(formatSseMessage({ id: sseEventId, event: "permission-request", data: JSON.stringify(payload) }));
+  }
+
   // Send current sessions state so late-connecting clients see existing sessions
   for (const [sid, slot] of sessions) {
     if (slot.state === "running") {
@@ -1433,6 +1453,8 @@ async function handleHookPermission(req, res) {
   if (body.permission_suggestions) {
     pendingPermissionBodies.set(permissionId, body.permission_suggestions);
   }
+  // Keep the full payload so it can be re-sent to clients that (re)connect.
+  pendingPermissionPayloads.set(permissionId, { permissionId, ...body, sessionId: sid });
 
   pushSseEvent("permission-request", { permissionId, ...body }, sid);
 
@@ -1588,6 +1610,20 @@ async function handleHookSessionEnd(req, res) {
   return jsonResponse(res, 200, { ok: true });
 }
 
+// SessionStart — register the session up front so it appears before any tool use.
+async function handleHookSessionStart(req, res) {
+  if (req.method !== "POST") return jsonResponse(res, 405, { error: "Method not allowed" });
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return jsonResponse(res, 400, { error: "Invalid JSON" });
+  }
+  const sid = resolveHookSession(body); // registers the slot if new
+  log("info", `Hook: SessionStart${sid ? ` session=${sid}` : ""}`);
+  return jsonResponse(res, 200, { ok: true });
+}
+
 function handleStatus(_req, res) {
   const mostRecentRunningSession = findMostRecentRunningSession();
   return jsonResponse(res, 200, {
@@ -1713,6 +1749,7 @@ const routes = {
   "POST /hooks/task-complete": handleHookTaskComplete,
   "POST /hooks/error": handleHookError,
   "POST /hooks/session-end": handleHookSessionEnd,
+  "POST /hooks/session-start": handleHookSessionStart,
   "GET /status": handleStatus,
   "GET /cmux/tree": handleCmuxTree,
   "GET /cmux/screen": handleCmuxScreen,

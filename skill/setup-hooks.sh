@@ -94,6 +94,13 @@ new_hooks = {
             'timeout': 5
         }]
     }],
+    'SessionStart': [{
+        'hooks': [{
+            'type': 'http',
+            'url': f'{BRIDGE}/hooks/session-start',
+            'timeout': 5
+        }]
+    }],
     'SessionEnd': [{
         'hooks': [{
             'type': 'http',
