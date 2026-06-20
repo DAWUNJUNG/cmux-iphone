@@ -35,6 +35,12 @@ final class RelayService: ObservableObject {
     // Permission prompt state (uses shared ApprovalRequest model)
     @Published var pendingApproval: ApprovalRequest? = nil
 
+    // cmux mirror — populated when the connected Mac runs cmux.
+    @Published private(set) var cmuxAvailable: Bool = false
+    @Published private(set) var cmuxWorkspaces: [CmuxWorkspace] = []
+    /// Bumped on every cmux event so terminal views refetch their screen live.
+    @Published private(set) var cmuxScreenTick: Int = 0
+
     // MARK: - Private
 
     private let bridgeClient = BridgeClient()
@@ -220,6 +226,32 @@ final class RelayService: ObservableObject {
         }
     }
 
+    // MARK: - cmux mirror
+
+    /// Fetch the live cmux workspace/terminal tree.
+    func refreshCmuxTree() {
+        Task { @MainActor in
+            do {
+                let data = try await bridgeClient.fetchCmuxTree()
+                let decoded = try JSONDecoder().decode(CmuxTreeResponse.self, from: data)
+                cmuxAvailable = decoded.available
+                cmuxWorkspaces = decoded.workspaces
+            } catch {
+                // keep previous state on transient failures
+            }
+        }
+    }
+
+    /// Read one cmux terminal's plain-text screen.
+    func cmuxScreen(_ terminalId: String) async -> String? {
+        try? await bridgeClient.fetchCmuxScreen(terminalId: terminalId)
+    }
+
+    /// Send a prompt straight to a cmux terminal (types + Enter).
+    func sendCmux(terminalId: String, text: String) {
+        Task { try? await bridgeClient.sendCommand(text: text, terminalId: terminalId) }
+    }
+
     /// Start pairing an additional Mac (PairingView is shown over the list).
     func beginAddMac() { isAddingMac = true }
     func cancelAddMac() { isAddingMac = false }
@@ -329,6 +361,10 @@ final class RelayService: ObservableObject {
 
         case "stop":
             handleStop(data)
+
+        case "cmux-event":
+            refreshCmuxTree()
+            cmuxScreenTick &+= 1
 
         case "poll-status":
             // Polling fallback -- just keep alive

@@ -1076,6 +1076,19 @@ async function handleCommand(req, res) {
     optionIndex,
   } = body;
 
+  // --- Direct cmux terminal input (mobile mirror) ---
+  if (command !== undefined && body.terminalId) {
+    if (!cmux.cmuxAvailable()) return jsonResponse(res, 503, { error: "cmux not available" });
+    const promptText = String(command).replace(/\n$/, "");
+    try {
+      cmux.sendInput(body.terminalId, promptText);
+      log("info", `cmux mobile input -> terminal ${String(body.terminalId).slice(0, 8)}: "${promptText.slice(0, 80)}"`);
+      return jsonResponse(res, 200, { ok: true, terminalId: body.terminalId, via: "cmux-mobile" });
+    } catch (err) {
+      return jsonResponse(res, 500, { error: `cmux input failed: ${err.message}` });
+    }
+  }
+
   // --- Spawn a new session ---
   if (spawnRequest) {
     const validAgents = ["claude", "codex"];
@@ -1537,6 +1550,7 @@ function handleStatus(_req, res) {
     sseClients: sseClients.size,
     pendingPermissions: pendingPermissions.size + codexSyntheticPermissions.size,
     eventBufferSize: sseBuffer.length,
+    cmuxAvailable: cmux.cmuxAvailable(),
     // Backward compat: expose the most recent active session's info
     hasPty: findMostRecentActiveSession() !== null,
     activeAgent: mostRecentRunningSession?.agent || null,
@@ -1546,6 +1560,85 @@ function handleStatus(_req, res) {
 function handleWebClient(_req, res) {
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
   res.end(WEB_CLIENT_HTML);
+}
+
+// Accept the token via Authorization header OR ?token= query.
+function authOk(req, url) {
+  if (requireAuth(req)) return true;
+  const q = url.searchParams.get("token");
+  return q !== null && q === sessionToken && sessionToken !== null;
+}
+
+// GET /cmux/tree — live cmux workspaces -> terminals for the mobile mirror.
+function handleCmuxTree(req, res) {
+  if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (!authOk(req, url)) return jsonResponse(res, 401, { error: "Unauthorized" });
+  if (!cmux.cmuxAvailable()) return jsonResponse(res, 200, { available: false, workspaces: [] });
+
+  const data = cmux.mobileWorkspaces();
+  const workspaces = (data?.workspaces || []).map((w) => ({
+    id: w.id,
+    title: w.title,
+    cwd: w.current_directory,
+    selected: !!w.is_selected,
+    hasUnread: !!w.has_unread,
+    preview: w.preview || null,
+    terminals: (w.terminals || []).map((t) => ({
+      id: t.id,
+      title: t.title,
+      cwd: t.current_directory,
+      focused: !!t.is_focused,
+      ready: !!t.is_ready,
+    })),
+  }));
+  return jsonResponse(res, 200, { available: true, workspaces });
+}
+
+// GET /cmux/screen?id=<terminalId> — plain-text screen of one cmux terminal.
+function handleCmuxScreen(req, res) {
+  if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (!authOk(req, url)) return jsonResponse(res, 401, { error: "Unauthorized" });
+  const id = url.searchParams.get("id");
+  if (!id) return jsonResponse(res, 400, { error: "Missing id" });
+  const text = cmux.readTerminalText(id);
+  return jsonResponse(res, 200, { id, text: text || "" });
+}
+
+// --- cmux events -> SSE (live mirror updates) ------------------------------
+let cmuxEventChild = null;
+let cmuxRespawnTimer = null;
+let cmuxDirtyTimer = null;
+
+// Coalesce bursts of cmux events into one "refetch" signal (~400ms).
+function signalCmuxDirty() {
+  if (cmuxDirtyTimer) return;
+  cmuxDirtyTimer = setTimeout(() => {
+    cmuxDirtyTimer = null;
+    pushSseEvent("cmux-event", { dirty: true });
+  }, 400);
+}
+
+function startCmuxEventStream() {
+  if (!cmux.cmuxAvailable()) return;
+  try {
+    cmuxEventChild = cmux.streamEvents(() => signalCmuxDirty());
+  } catch {
+    cmuxEventChild = null;
+  }
+  const scheduleRespawn = () => {
+    cmuxEventChild = null;
+    if (cmuxRespawnTimer) clearTimeout(cmuxRespawnTimer);
+    // cmux may be unreachable (pre-restart / password not yet active) — retry.
+    cmuxRespawnTimer = setTimeout(startCmuxEventStream, 5000);
+  };
+  if (cmuxEventChild) {
+    cmuxEventChild.on("exit", scheduleRespawn);
+    cmuxEventChild.on("error", scheduleRespawn);
+  } else {
+    scheduleRespawn();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1563,6 +1656,8 @@ const routes = {
   "POST /hooks/task-complete": handleHookTaskComplete,
   "POST /hooks/error": handleHookError,
   "GET /status": handleStatus,
+  "GET /cmux/tree": handleCmuxTree,
+  "GET /cmux/screen": handleCmuxScreen,
 };
 
 async function onRequest(req, res) {
@@ -1623,6 +1718,7 @@ async function startServer() {
   log("info", `Bridge server listening on 0.0.0.0:${boundPort}`);
 
   loadPersistedToken();
+  startCmuxEventStream();
 
   const code = generatePairingCode();
 

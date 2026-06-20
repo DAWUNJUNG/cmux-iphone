@@ -9,6 +9,34 @@ import UIKit
 private struct OfficeRoute: Hashable { let id: UUID }
 private struct FolderRoute: Hashable { let folder: String }
 private struct SessionRoute: Hashable { let sessionId: String }
+// cmux mirror routes (when the Mac runs cmux): Office → Workspace → Terminal
+private struct CmuxWorkspaceRoute: Hashable { let id: String }
+private struct CmuxTerminalRoute: Hashable { let id: String; let title: String }
+
+// MARK: - cmux mirror models (decoded from GET /cmux/tree)
+
+struct CmuxTreeResponse: Decodable {
+    let available: Bool
+    let workspaces: [CmuxWorkspace]
+}
+
+struct CmuxWorkspace: Identifiable, Decodable, Equatable {
+    let id: String
+    let title: String
+    let cwd: String?
+    let selected: Bool
+    let hasUnread: Bool
+    let preview: String?
+    let terminals: [CmuxTerminal]
+}
+
+struct CmuxTerminal: Identifiable, Decodable, Equatable {
+    let id: String
+    let title: String
+    let cwd: String?
+    let focused: Bool
+    let ready: Bool
+}
 
 /// Workspace key for a session: project folder name, falling back to the cwd's
 /// last path component, then a placeholder.
@@ -63,6 +91,12 @@ struct ConnectionStatusView: View {
             }
             .navigationDestination(for: SessionRoute.self) { route in
                 SessionDetailView(sessionId: route.sessionId)
+            }
+            .navigationDestination(for: CmuxWorkspaceRoute.self) { route in
+                CmuxTerminalsView(workspaceId: route.id)
+            }
+            .navigationDestination(for: CmuxTerminalRoute.self) { route in
+                CmuxTerminalView(terminalId: route.id, title: route.title)
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -274,7 +308,9 @@ private struct WorkspacesView: View {
     var body: some View {
         ZStack {
             Color.appBackground.ignoresSafeArea()
-            if relayService.sessions.isEmpty {
+            if relayService.cmuxAvailable {
+                cmuxWorkspaceList
+            } else if relayService.sessions.isEmpty {
                 emptyState
             } else {
                 ScrollView {
@@ -305,6 +341,77 @@ private struct WorkspacesView: View {
                 }
             }
         }
+        .onAppear { relayService.refreshCmuxTree() }
+    }
+
+    // MARK: cmux mirror — workspaces list
+
+    private var cmuxWorkspaceList: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(relayService.machineName ?? "cmux")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(Color.textPrimary)
+                        .lineLimit(1)
+                    Text("워크스페이스 \(relayService.cmuxWorkspaces.count)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.subtleText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ForEach(relayService.cmuxWorkspaces) { ws in
+                    NavigationLink(value: CmuxWorkspaceRoute(id: ws.id)) {
+                        cmuxWorkspaceRow(ws)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private func cmuxWorkspaceRow(_ ws: CmuxWorkspace) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "rectangle.3.group")
+                .font(.system(size: 18))
+                .foregroundStyle(Color.claudeOrange.opacity(0.9))
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(ws.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
+                if let preview = ws.preview, !preview.isEmpty {
+                    Text(preview)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.claudeAmber)
+                        .lineLimit(1)
+                } else {
+                    Text("\(ws.terminals.count) sessions")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.subtleText)
+                }
+            }
+
+            Spacer()
+            if ws.hasUnread {
+                Circle().fill(Color.claudeAmber).frame(width: 8, height: 8)
+            } else if ws.selected {
+                Circle().fill(Color.statusGreen).frame(width: 8, height: 8)
+            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.subtleText.opacity(0.6))
+        }
+        .padding(14)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(ws.selected ? Color.claudeOrange.opacity(0.35) : Color.hairline, lineWidth: 1)
+        )
     }
 
     private var header: some View {
@@ -421,6 +528,184 @@ private struct WorkspacesView: View {
 }
 
 // MARK: - Level 3: Sessions in a folder — SCREEN 04
+
+// MARK: - cmux mirror: terminals in a workspace
+
+private struct CmuxTerminalsView: View {
+    let workspaceId: String
+    @EnvironmentObject private var relayService: RelayService
+
+    private var workspace: CmuxWorkspace? {
+        relayService.cmuxWorkspaces.first { $0.id == workspaceId }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.appBackground.ignoresSafeArea()
+            if let ws = workspace {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(ws.title)
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(Color.textPrimary)
+                                .lineLimit(2)
+                            Text("\(ws.terminals.count) sessions")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.subtleText)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        ForEach(ws.terminals) { t in
+                            NavigationLink(value: CmuxTerminalRoute(id: t.id, title: t.title)) {
+                                terminalRow(t)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(16)
+                }
+            } else {
+                Text("워크스페이스를 찾을 수 없습니다.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.subtleText)
+            }
+        }
+        .navigationTitle(workspace?.title ?? "Workspace")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { relayService.refreshCmuxTree() }
+    }
+
+    private func terminalRow(_ t: CmuxTerminal) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.system(size: 15))
+                .foregroundStyle(t.focused ? Color.claudeOrange : Color.subtleText)
+                .frame(width: 30, height: 30)
+                .background(Color.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(t.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
+                if let cwd = t.cwd, !cwd.isEmpty {
+                    Text(cwd)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.subtleText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer()
+            if t.focused { Circle().fill(Color.statusGreen).frame(width: 7, height: 7) }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.subtleText.opacity(0.6))
+        }
+        .padding(14)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+// MARK: - cmux mirror: live terminal screen + prompt input
+
+private struct CmuxTerminalView: View {
+    let terminalId: String
+    let title: String
+    @EnvironmentObject private var relayService: RelayService
+
+    @State private var screen: String = ""
+    @State private var promptText: String = ""
+    @FocusState private var inputFocused: Bool
+    private let pollTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        ZStack {
+            Color.appBackground.ignoresSafeArea()
+            VStack(spacing: 0) {
+                screenView
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                inputBar
+                    .padding(12)
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: terminalId) { await refresh() }
+        .onReceive(pollTimer) { _ in Task { await refresh() } }
+        .onChange(of: relayService.cmuxScreenTick) { _, _ in Task { await refresh() } }
+    }
+
+    private func refresh() async {
+        if let txt = await relayService.cmuxScreen(terminalId) {
+            screen = txt
+        }
+    }
+
+    private var screenView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                Text(screen.isEmpty ? "…" : screen)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(12)
+                Color.clear.frame(height: 1).id("bottom")
+            }
+            .onChange(of: screen) { _, _ in
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 8) {
+            TextField("프롬프트 입력…", text: $promptText, axis: .vertical)
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(Color.textPrimary)
+                .tint(Color.claudeOrange)
+                .lineLimit(1...4)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.hairline, lineWidth: 1))
+                .focused($inputFocused)
+
+            Button { send() } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
+    private func send() {
+        let t = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        relayService.sendCmux(terminalId: terminalId, text: t)
+        promptText = ""
+        inputFocused = false
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await refresh()
+        }
+    }
+}
 
 private struct SessionsListView: View {
     let folder: String

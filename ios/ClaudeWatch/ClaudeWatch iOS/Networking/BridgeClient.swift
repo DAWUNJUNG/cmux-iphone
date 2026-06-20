@@ -121,11 +121,41 @@ final class BridgeClient {
 
     // MARK: - Commands
 
-    /// Sends a text command to a specific session's PTY.
-    func sendCommand(text: String, sessionId: String? = nil) async throws {
+    /// Sends a text command to a session's PTY, or directly to a cmux terminal.
+    func sendCommand(text: String, sessionId: String? = nil, terminalId: String? = nil) async throws {
         var body: [String: Any] = ["command": text]
         if let sid = sessionId { body["sessionId"] = sid }
+        if let tid = terminalId { body["terminalId"] = tid }
         try await authenticatedPostRaw(path: "command", body: body)
+    }
+
+    /// Fetches the live cmux workspace/terminal tree (raw JSON data).
+    func fetchCmuxTree() async throws -> Data {
+        guard let baseURL, let token else { throw BridgeError.networkError }
+        let url = baseURL.appendingPathComponent("cmux/tree")
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BridgeError.networkError
+        }
+        return data
+    }
+
+    /// Reads the plain-text screen of one cmux terminal.
+    func fetchCmuxScreen(terminalId: String) async throws -> String {
+        guard let baseURL, let token else { throw BridgeError.networkError }
+        var comps = URLComponents(url: baseURL.appendingPathComponent("cmux/screen"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "id", value: terminalId)]
+        guard let url = comps?.url else { throw BridgeError.networkError }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BridgeError.networkError
+        }
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (json?["text"] as? String) ?? ""
     }
 
     /// Spawns a new agent session.

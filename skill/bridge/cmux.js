@@ -18,7 +18,7 @@
 // shell-injected. Every function is best-effort: on any failure it throws and
 // the caller falls back to the original detached behaviour.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 
 function findCmuxBin() {
@@ -43,9 +43,21 @@ function findCmuxBin() {
 const CMUX_BIN = findCmuxBin();
 const LSOF_BIN = "/usr/sbin/lsof";
 
+// Socket password (cmux socketControlMode=password). Lets the launchd bridge —
+// which runs OUTSIDE cmux — authenticate to the cmux control socket.
+const CMUX_PASSWORD = (() => {
+  try {
+    return fs.readFileSync(`${process.env.HOME}/.config/claude-watch/cmux-password`, "utf-8").trim() || null;
+  } catch { return null; }
+})();
+
+function withAuth(args) {
+  return CMUX_PASSWORD ? ["--password", CMUX_PASSWORD, ...args] : args;
+}
+
 function cmux(args) {
   if (!CMUX_BIN) throw new Error("cmux binary not found");
-  return execFileSync(CMUX_BIN, args, { encoding: "utf-8", timeout: 8000 });
+  return execFileSync(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
 }
 
 export function cmuxAvailable() {
@@ -133,4 +145,74 @@ export function sendChars(surface, chars) {
 // Send a named key event — e.g. "enter", "escape", "ctrl+c".
 export function sendKey(surface, key) {
   cmux(["send-key", "--surface", surface, key]);
+}
+
+// ---------------------------------------------------------------------------
+// Mobile mirror API (cmux rpc) — drives the phone's live cmux view.
+// ---------------------------------------------------------------------------
+
+function rpc(method, params) {
+  if (!CMUX_BIN) throw new Error("cmux binary not found");
+  const args = ["rpc", method];
+  if (params !== undefined) args.push(JSON.stringify(params));
+  const out = execFileSync(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
+  return out && out.trim() ? JSON.parse(out) : null;
+}
+
+// Full workspace → terminal tree for the mobile mirror.
+// Returns the raw mobile.workspace.list payload (workspaces[].terminals[]).
+export function mobileWorkspaces() {
+  if (!CMUX_BIN) return null;
+  try {
+    return rpc("mobile.workspace.list");
+  } catch {
+    return null;
+  }
+}
+
+// Plain-text rendering of a terminal/surface (accepts a UUID or surface ref).
+export function readTerminalText(id) {
+  if (!CMUX_BIN || !id) return null;
+  try {
+    const r = rpc("surface.read_text", { surface: id });
+    return r && typeof r.text === "string" ? r.text : null;
+  } catch {
+    return null;
+  }
+}
+
+// Send text to a terminal by id, then submit with Enter (so prompts from the
+// phone land in the live agent surface exactly as if typed).
+export function sendInput(terminalId, text, submit = true) {
+  if (!CMUX_BIN || !terminalId) throw new Error("missing terminal id");
+  rpc("mobile.terminal.input", { terminal_id: terminalId, text: String(text) });
+  if (submit) {
+    try {
+      cmux(["send-key", "--surface", terminalId, "enter"]);
+    } catch {
+      rpc("mobile.terminal.input", { terminal_id: terminalId, text: "\r" });
+    }
+  }
+}
+
+// Stream cmux events (newline-delimited JSON). Calls onEvent(obj) per frame.
+// Auto-reconnects (cmux --reconnect); the caller should respawn if the child
+// exits (e.g. before the socket is reachable). Returns the child process.
+export function streamEvents(onEvent) {
+  if (!CMUX_BIN) return null;
+  const child = spawn(CMUX_BIN, withAuth(["events", "--reconnect", "--no-heartbeat", "--no-ack"]), {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  let buf = "";
+  child.stdout.on("data", (d) => {
+    buf += d.toString();
+    let idx;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try { onEvent(JSON.parse(line)); } catch { /* ignore non-JSON */ }
+    }
+  });
+  return child;
 }
