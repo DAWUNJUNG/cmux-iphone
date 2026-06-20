@@ -53,6 +53,16 @@ final class BridgeClient {
         UserDefaults.standard.set(urlString, forKey: "bridge_url")
     }
 
+    /// Switch the active bridge to an already-paired Mac (host/port/token known).
+    /// Used by the Macs switcher — no pairing round-trip.
+    func applyActive(host: String, port: UInt16, token: String) {
+        let urlString = "http://\(host):\(port)"
+        self.baseURL = URL(string: urlString)
+        self.token = token
+        UserDefaults.standard.set(urlString, forKey: "bridge_url")
+        UserDefaults.standard.set(token, forKey: "bridge_token")
+    }
+
     var isPaired: Bool {
         token != nil && baseURL != nil
     }

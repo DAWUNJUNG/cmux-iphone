@@ -31,6 +31,8 @@
 		604C561E47617AC39C62C485 /* AgentIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = F237360F4AF9396B7B3C1881 /* AgentIcon.swift */; };
 		6A6376EBDE858B8212DE6FCF /* RelayService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B401B158966DA9BF77B5EB50 /* RelayService.swift */; };
 		6AFDB2757A13AF003F9CCAE1 /* AgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6346DB31D379397056FB2AEC /* AgentSession.swift */; };
+		8D2448B3D5478CAB0231F8E2 /* Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A3E7F3161486817A237410B /* Connections.swift */; };
+		BBA05FA95F3F98A56CF0C031 /* Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A3E7F3161486817A237410B /* Connections.swift */; };
 		6BB8C42991468DB0E89B48AA /* WatchMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D315314A06584F20A95E7DB6 /* WatchMessage.swift */; };
 		7444DC329E5872F468957C9B /* BonjourDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA2B15D26296793FFC0AC5D /* BonjourDiscovery.swift */; };
 		7C266D4E98C89230997C6714 /* AgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6346DB31D379397056FB2AEC /* AgentSession.swift */; };
@@ -96,6 +98,7 @@
 		5B51788852DF163154F0D978 /* WatchBridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchBridgeClient.swift; sourceTree = "<group>"; };
 		6024E04F2B37D81C8CA74D27 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		6346DB31D379397056FB2AEC /* AgentSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSession.swift; sourceTree = "<group>"; };
+		8A3E7F3161486817A237410B /* Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Connections.swift; sourceTree = "<group>"; };
 		68FBA67A3544CEF418CF023C /* WatchSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSessionManager.swift; sourceTree = "<group>"; };
 		7286024A0F74A978473A0CF0 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		74426507D318951C7975BA9B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -221,6 +224,7 @@
 			isa = PBXGroup;
 			children = (
 				6346DB31D379397056FB2AEC /* AgentSession.swift */,
+				8A3E7F3161486817A237410B /* Connections.swift */,
 				3B42442B8133715613F1B33C /* ApprovalRequest.swift */,
 				3A8D708937263FAAC2A40CCA /* OutputRingBuffer.swift */,
 				863F358F393A686BB368B2B0 /* SessionState.swift */,
@@ -380,6 +384,7 @@
 			files = (
 				604C561E47617AC39C62C485 /* AgentIcon.swift in Sources */,
 				7C266D4E98C89230997C6714 /* AgentSession.swift in Sources */,
+				8D2448B3D5478CAB0231F8E2 /* Connections.swift in Sources */,
 				90B7313C239B5B0D98D9CF7F /* ApprovalRequest.swift in Sources */,
 				7444DC329E5872F468957C9B /* BonjourDiscovery.swift in Sources */,
 				A4537D76D204EE5733D1E5EE /* BridgeClient.swift in Sources */,
@@ -407,6 +412,7 @@
 			files = (
 				FAF94EB271EDC52F9DFBAC7B /* AgentIcon.swift in Sources */,
 				6AFDB2757A13AF003F9CCAE1 /* AgentSession.swift in Sources */,
+				BBA05FA95F3F98A56CF0C031 /* Connections.swift in Sources */,
 				056CF0B6ED69C08286F46458 /* ApprovalRequest.swift in Sources */,
 				DCE274895FA3FD6E784C9F57 /* ApprovalView.swift in Sources */,
 				ED44F4F97DC4EA01CA9CA7EF /* ClaudeMascot.swift in Sources */,
@@ -447,14 +453,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = T7HT4U4666;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "ClaudeWatch iOS/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.shobhit.claudewatch;
+				PRODUCT_BUNDLE_IDENTIFIER = com.seungwon.agentiphone;
 				PRODUCT_NAME = "Agent Watch";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -470,11 +476,11 @@
 					arm64_32,
 				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				DEVELOPMENT_TEAM = T7HT4U4666;
+				DEVELOPMENT_TEAM = "";
 				"EXCLUDED_ARCHS[sdk=watchsimulator*]" = arm64e;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "ClaudeWatch watchOS/Info.plist";
-				PRODUCT_BUNDLE_IDENTIFIER = com.shobhit.claudewatch.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.seungwon.agentiphone.watchkitapp;
 				PRODUCT_NAME = "Agent Watch";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -495,7 +501,7 @@
 				"EXCLUDED_ARCHS[sdk=watchsimulator*]" = arm64e;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "ClaudeWatch watchOS/Info.plist";
-				PRODUCT_BUNDLE_IDENTIFIER = com.shobhit.claudewatch.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.seungwon.agentiphone.watchkitapp;
 				PRODUCT_NAME = "Agent Watch";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -635,7 +641,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.shobhit.claudewatch;
+				PRODUCT_BUNDLE_IDENTIFIER = com.seungwon.agentiphone;
 				PRODUCT_NAME = "Agent Watch";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

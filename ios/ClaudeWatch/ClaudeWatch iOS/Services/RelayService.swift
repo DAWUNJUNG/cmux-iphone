@@ -211,6 +211,15 @@ final class RelayService: ObservableObject {
         updateWatchState()
     }
 
+    /// Reflect a rename of the active connection into the live UI label.
+    func refreshActiveName() {
+        if let active = ConnectionStore.shared.active {
+            machineName = active.name
+            UserDefaults.standard.set(active.name, forKey: "paired_machine_name")
+            updateWatchState()
+        }
+    }
+
     /// Start pairing an additional Mac (PairingView is shown over the list).
     func beginAddMac() { isAddingMac = true }
     func cancelAddMac() { isAddingMac = false }
@@ -526,8 +535,8 @@ final class RelayService: ObservableObject {
         guard let sid = sessionId,
               let idx = sessions.firstIndex(where: { $0.id == sid }) else { return }
         sessions[idx].terminalLines.append(line)
-        if sessions[idx].terminalLines.count > 200 {
-            sessions[idx].terminalLines.removeFirst(sessions[idx].terminalLines.count - 200)
+        if sessions[idx].terminalLines.count > 500 {
+            sessions[idx].terminalLines.removeFirst(sessions[idx].terminalLines.count - 500)
         }
     }
 

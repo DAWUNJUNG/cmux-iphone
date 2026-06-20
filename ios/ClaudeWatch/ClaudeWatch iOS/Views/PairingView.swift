@@ -15,12 +15,15 @@ struct PairingView: View {
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
     @State private var isConnecting: Bool = false
+    @State private var cursorVisible: Bool = true
+
+    private let cursorTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     // MARK: - Body
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.appBackground.ignoresSafeArea()
 
             VStack(spacing: 24) {
                 Spacer()
@@ -33,30 +36,35 @@ struct PairingView: View {
                 }
 
                 digitFields
+                discoveryStatus
                 statusSection
-                bottomSection
 
                 Spacer()
+
+                bottomSection
             }
             .padding(.horizontal, 32)
+        }
+        .onReceive(cursorTimer) { _ in
+            cursorVisible.toggle()
         }
     }
 
     // MARK: - Subviews
 
     private var mascotIcon: some View {
-        AppLogo(size: 88)
+        AppLogo(size: 64)
     }
 
     private var titleSection: some View {
         VStack(spacing: 8) {
-            Text("Agent Watch")
+            Text("Agent iPhone")
                 .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(Color.claudeOrange)
+                .foregroundStyle(Color.textPrimary)
 
             Text(showManualIP
-                 ? "Enter your Mac's IP and the pairing code"
-                 : "Enter the pairing code from your Mac")
+                 ? "Mac의 IP 주소와 페어링 코드를 입력하세요."
+                 : "Mac에 표시된 6자리 페어링 코드를 입력하세요.")
                 .font(.system(size: 15))
                 .foregroundStyle(Color.subtleText)
                 .multilineTextAlignment(.center)
@@ -68,12 +76,12 @@ struct PairingView: View {
             TextField("192.168.1.x", text: $ipAddress)
                 .keyboardType(.decimalPad)
                 .font(.system(size: 17, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.textPrimary)
                 .tint(Color.claudeOrange)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background(Color.cardBackground)
+                .background(Color.surfaceElevated)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
@@ -106,7 +114,8 @@ struct PairingView: View {
                         character: digitAt(index),
                         isActive: index == code.count && isCodeFocused && !isConnecting,
                         isError: showError,
-                        isDisabled: isConnecting
+                        isDisabled: isConnecting,
+                        showCursor: cursorVisible
                     )
                 }
             }
@@ -124,12 +133,34 @@ struct PairingView: View {
     }
 
     @ViewBuilder
+    private var discoveryStatus: some View {
+        if !showManualIP {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(relayService.machineName != nil ? Color.statusGreen : Color.subtleText.opacity(0.5))
+                    .frame(width: 8, height: 8)
+
+                if let name = relayService.machineName {
+                    Text("브리지 발견 · \(name)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.subtleText)
+                } else {
+                    Text("브리지 검색 중…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.mutedText)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
     private var statusSection: some View {
         if isConnecting {
             HStack(spacing: 8) {
                 ProgressView()
                     .tint(Color.claudeOrange)
-                Text("Connecting to Mac...")
+                Text("Mac에 연결 중…")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.subtleText)
             }
@@ -137,7 +168,7 @@ struct PairingView: View {
         } else if showError {
             Text(errorMessage)
                 .font(.system(size: 14))
-                .foregroundStyle(errorMessage.contains("expired") ? Color.claudeAmber : .red)
+                .foregroundStyle(errorMessage.contains("만료") ? Color.claudeAmber : Color.denyRed)
                 .multilineTextAlignment(.center)
                 .transition(.opacity)
                 .padding(.top, 4)
@@ -145,7 +176,23 @@ struct PairingView: View {
     }
 
     private var bottomSection: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
+            // Hint pill
+            HStack(spacing: 8) {
+                Text("Mac에서 node server.js 실행")
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(Color.subtleText)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.hairline, lineWidth: 1)
+            )
+
             if !showManualIP {
                 Button {
                     withAnimation {
@@ -153,18 +200,24 @@ struct PairingView: View {
                         isIPFocused = true
                     }
                 } label: {
-                    Text("Can't connect? Enter IP manually")
-                        .font(.system(size: 13))
+                    Text("연결이 안 되나요? IP 직접 입력")
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.claudeOrange)
                 }
             }
 
-            Text("Run `node server.js` in the bridge folder to start")
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(Color.subtleText)
-                .multilineTextAlignment(.center)
+            if relayService.isAddingMac {
+                Button {
+                    relayService.cancelAddMac()
+                } label: {
+                    Text("취소")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.subtleText)
+                }
+                .padding(.top, 2)
+            }
         }
-        .padding(.bottom, 16)
+        .padding(.bottom, 24)
     }
 
     // MARK: - Logic
@@ -203,7 +256,7 @@ struct PairingView: View {
                     let ip = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !ip.isEmpty else {
                         await MainActor.run {
-                            showPairingError("Please enter your Mac's IP address.")
+                            showPairingError("Mac의 IP 주소를 입력하세요.")
                         }
                         return
                     }
@@ -219,10 +272,10 @@ struct PairingView: View {
                     // If auto-discovery failed, suggest manual IP
                     if msg.contains("noServiceFound") || msg.contains("timed out") || msg.contains("not found") {
                         showManualIP = true
-                        showPairingError("Bridge not found automatically. Enter your Mac's IP address.")
+                        showPairingError("브리지를 자동으로 찾지 못했습니다. Mac의 IP 주소를 입력하세요.")
                         isIPFocused = true
                     } else {
-                        showPairingError("Connection failed: \(msg)")
+                        showPairingError("연결 실패: \(msg)")
                     }
                 }
             }
@@ -232,19 +285,19 @@ struct PairingView: View {
     private func handlePairingError(_ error: BridgeClient.BridgeError) {
         switch error {
         case .invalidCode:
-            showPairingError("Incorrect code. Please try again.")
+            showPairingError("코드가 올바르지 않습니다. 다시 시도하세요.")
             shakeFields()
         case .expired:
-            showPairingError("Code expired. A new code has been generated on your Mac.")
+            showPairingError("코드가 만료되었습니다. Mac에서 새 코드가 생성되었습니다.")
         case .rateLimited:
-            showPairingError("Too many attempts. Please wait a few minutes.")
+            showPairingError("시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요.")
         case .networkError:
             if !showManualIP {
                 showManualIP = true
-                showPairingError("Can't reach bridge. Enter your Mac's IP address.")
+                showPairingError("브리지에 연결할 수 없습니다. Mac의 IP 주소를 입력하세요.")
                 isIPFocused = true
             } else {
-                showPairingError("Cannot reach the bridge server. Check the IP and network.")
+                showPairingError("브리지 서버에 연결할 수 없습니다. IP와 네트워크를 확인하세요.")
             }
         case .serverError(let msg):
             showPairingError(msg)
@@ -285,22 +338,41 @@ private struct DigitBox: View {
     let isActive: Bool
     let isError: Bool
     let isDisabled: Bool
+    let showCursor: Bool
+
+    private var isFilled: Bool { character != nil }
+
+    private var borderColor: Color {
+        if isError { return Color.denyRed }
+        if isActive { return Color.claudeOrange }
+        return Color.hairline
+    }
+
+    private var backgroundColor: Color {
+        isFilled ? Color.cardBackground : Color.surfaceElevated
+    }
 
     var body: some View {
-        Text(character.map(String.init) ?? "")
-            .font(.system(size: 28, weight: .bold, design: .monospaced))
-            .foregroundStyle(isError ? .red : Color.claudeOrange)
-            .frame(width: 48, height: 56)
-            .background(Color.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(
-                        isError ? .red : (isActive ? Color.claudeOrange : Color.fieldBorder),
-                        lineWidth: isActive ? 2 : 1
-                    )
-            )
-            .opacity(isDisabled ? 0.4 : 1.0)
+        ZStack {
+            if let character {
+                Text(String(character))
+                    .font(.system(size: 24, design: .monospaced))
+                    .foregroundStyle(isError ? Color.denyRed : Color.textPrimary)
+            } else if isActive && showCursor {
+                // Blinking cursor on the current/next box
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.claudeOrange)
+                    .frame(width: 2, height: 26)
+            }
+        }
+        .frame(width: 44, height: 54)
+        .background(backgroundColor)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(borderColor, lineWidth: isActive ? 2 : 1)
+        )
+        .opacity(isDisabled ? 0.4 : 1.0)
     }
 }
 

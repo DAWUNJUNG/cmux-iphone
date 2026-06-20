@@ -13,7 +13,7 @@ struct ClaudeWatchApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if relayService.isPaired {
+                if relayService.isPaired && !relayService.isAddingMac {
                     ConnectionStatusView()
                 } else {
                     PairingView()

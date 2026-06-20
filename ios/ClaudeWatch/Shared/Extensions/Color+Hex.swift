@@ -32,25 +32,49 @@ extension Color {
         self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
     }
 
-    // MARK: - Agent Watch brand colors
+    // MARK: - Agent iPhone design system
+    //
+    // Palette (from design/Agent iPhone.html):
+    //   background #0A0A0B · surface #151517 · accent #EE7E38 ·
+    //   approval #E8A735 · running #54C98A · deny #E5484D · text #F4F3F1
+    // Rule: one color per state, used sparingly; hairline borders, not heavy strokes;
+    // monospace only for code/paths; mascot only for human moments.
 
-    /// Primary orange: #E87A35
-    static let claudeOrange = Color(hex: "E87A35")
+    /// App background (near-black): #0A0A0B
+    static let appBackground = Color(hex: "0A0A0B")
 
-    /// Amber warning: #E8A735
+    /// Primary accent orange: #EE7E38
+    static let claudeOrange = Color(hex: "EE7E38")
+
+    /// Approval / amber warning: #E8A735
     static let claudeAmber = Color(hex: "E8A735")
 
-    /// Subtle text: #666666
-    static let subtleText = Color(hex: "666666")
+    /// Running / success green: #54C98A
+    static let statusGreen = Color(hex: "54C98A")
 
-    /// Card / field background: #1a1a1a
-    static let cardBackground = Color(hex: "1a1a1a")
+    /// Deny / error red: #E5484D
+    static let denyRed = Color(hex: "E5484D")
 
-    /// Border: #333333
-    static let fieldBorder = Color(hex: "333333")
+    /// Primary text (off-white): #F4F3F1
+    static let textPrimary = Color(hex: "F4F3F1")
 
-    /// Success green: #5AD87A
-    static let statusGreen = Color(hex: "5AD87A")
+    /// Secondary / subtle text: #6E6E73
+    static let subtleText = Color(hex: "6E6E73")
+
+    /// Tertiary muted text: #86868B
+    static let mutedText = Color(hex: "86868B")
+
+    /// Card / surface background: #151517
+    static let cardBackground = Color(hex: "151517")
+
+    /// Elevated surface (nested rows): #1C1C1E
+    static let surfaceElevated = Color(hex: "1C1C1E")
+
+    /// Hairline border — thin white line, ~6% opacity.
+    static let hairline = Color.white.opacity(0.06)
+
+    /// Field border (subtle): white ~10%.
+    static let fieldBorder = Color.white.opacity(0.10)
 
     /// Connected pill background: #1a2233
     static let connectedPillBackground = Color(hex: "1a2233")

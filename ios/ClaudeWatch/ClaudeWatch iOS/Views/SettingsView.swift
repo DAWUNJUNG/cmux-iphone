@@ -3,39 +3,35 @@ import SwiftUI
 struct SettingsView: View {
 
     @EnvironmentObject private var relayService: RelayService
+    @ObservedObject private var store = ConnectionStore.shared
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("connectionMode") private var connectionMode: ConnectionMode = .auto
-
-    @State private var showForgetConfirmation = false
 
     var body: some View {
         NavigationStack {
             Form {
                 connectionSection
-                pairedMacSection
+                macsSection
                 aboutSection
             }
             .scrollContentBackground(.hidden)
-            .background(Color.black)
-            .navigationTitle("Settings")
+            .background(Color.appBackground)
+            .navigationTitle("설정")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if !store.connections.isEmpty {
+                        EditButton()
+                            .foregroundStyle(Color.claudeOrange)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
+                    Button("완료") {
                         dismiss()
                     }
                     .foregroundStyle(Color.claudeOrange)
                 }
-            }
-            .alert("Forget Mac?", isPresented: $showForgetConfirmation) {
-                Button("Forget", role: .destructive) {
-                    relayService.unpair()
-                    dismiss()
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("You will need to re-pair with a new code from Claude Code.")
             }
         }
     }
@@ -44,62 +40,118 @@ struct SettingsView: View {
 
     private var connectionSection: some View {
         Section {
-            Picker("Connection Mode", selection: $connectionMode) {
-                Text("Auto").tag(ConnectionMode.auto)
-                Text("LAN Only").tag(ConnectionMode.lanOnly)
+            HStack {
+                Text("검색")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(Color.textPrimary)
+                Spacer()
+                Picker("검색", selection: $connectionMode) {
+                    Text("자동").tag(ConnectionMode.auto)
+                    Text("LAN").tag(ConnectionMode.lanOnly)
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
             }
+            .listRowBackground(Color.cardBackground)
         } header: {
-            Text("Connection")
+            Text("연결")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.mutedText)
         } footer: {
-            Text("Auto discovers the bridge via Bonjour on your local network.")
+            Text("자동은 로컬 네트워크에서 Bonjour로 브리지를 검색합니다.")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Color.subtleText)
         }
     }
 
-    private var pairedMacSection: some View {
-        Section("Paired Mac") {
-            if relayService.isPaired {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(relayService.machineName ?? "Unknown Mac")
-                            .foregroundStyle(.white)
-                        if let lastConnected = relayService.lastConnected {
-                            Text("Last connected \(lastConnected, style: .relative) ago")
-                                .font(.caption)
+    private var macsSection: some View {
+        Section {
+            ForEach(store.connections) { conn in
+                Button {
+                    relayService.switchTo(conn)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(conn.name)
+                                .font(.system(size: 16, weight: .regular))
+                                .foregroundStyle(Color.textPrimary)
+                            Text("\(conn.host):\(conn.port)")
+                                .font(.system(size: 13, design: .monospaced))
                                 .foregroundStyle(Color.subtleText)
                         }
+                        Spacer()
+                        if conn.id == store.activeID {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color.claudeOrange)
+                        }
                     }
-                    Spacer()
+                    .contentShape(Rectangle())
                 }
-
-                Button("Forget This Mac", role: .destructive) {
-                    showForgetConfirmation = true
-                }
-            } else {
-                Text("No Mac paired")
-                    .foregroundStyle(Color.subtleText)
+                .listRowBackground(Color.cardBackground)
             }
+            .onDelete { offsets in
+                for i in offsets {
+                    let conn = store.connections[i]
+                    if conn.id == store.activeID {
+                        relayService.forgetActive()
+                    } else {
+                        store.remove(conn.id)
+                    }
+                }
+            }
+
+            Button {
+                relayService.beginAddMac()
+                dismiss()
+            } label: {
+                Label("다른 Mac 추가", systemImage: "plus")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(Color.claudeOrange)
+            }
+            .listRowBackground(Color.cardBackground)
+        } header: {
+            Text("MAC")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.mutedText)
+        } footer: {
+            Text("탭하여 전환 · 스와이프하여 삭제")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Color.subtleText)
         }
     }
 
     private var aboutSection: some View {
-        Section("About") {
+        Section {
             HStack {
-                Text("Version")
+                Text("버전")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(Color.textPrimary)
                 Spacer()
                 Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")
+                    .font(.system(size: 14, design: .monospaced))
                     .foregroundStyle(Color.subtleText)
             }
+            .listRowBackground(Color.cardBackground)
 
-            Link(destination: URL(string: "https://github.com/anthropics/claude-code")!) {
+            Link(destination: URL(string: "https://claude.com/claude-code")!) {
                 HStack {
                     Text("Claude Code")
-                        .foregroundStyle(.white)
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Color.textPrimary)
                     Spacer()
                     Image(systemName: "arrow.up.right")
-                        .font(.caption)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.subtleText)
                 }
+                .contentShape(Rectangle())
             }
+            .listRowBackground(Color.cardBackground)
+        } header: {
+            Text("정보")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.mutedText)
         }
     }
 }
