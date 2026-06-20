@@ -10,8 +10,24 @@
 set -e
 
 PORT="${1:-7860}"
-BRIDGE_URL="http://127.0.0.1:${PORT}"
+BRIDGE_URL="http://127.0.0.1:${PORT}"          # phone API listener (status check)
+HOOK_PORT="${CLAUDE_WATCH_HOOK_PORT:-7861}"
+HOOK_URL="http://127.0.0.1:${HOOK_PORT}"        # loopback hook listener (secret-gated)
 SETTINGS="$HOME/.claude/settings.json"
+SECRET_FILE="$HOME/Library/Application Support/claude-watch/hook-secret"
+
+# Shared hook secret — must match what the bridge uses. Create it if neither the
+# bridge nor a prior install has yet (the bridge honors an existing file).
+if [ "$1" != "--remove" ]; then
+  if [ ! -s "$SECRET_FILE" ]; then
+    mkdir -p "$(dirname "$SECRET_FILE")"
+    HOOK_SECRET="$(openssl rand -hex 24 2>/dev/null || (head -c24 /dev/urandom | od -An -tx1 | tr -d ' \n'))"
+    printf '%s' "$HOOK_SECRET" > "$SECRET_FILE"
+    chmod 600 "$SECRET_FILE"
+  else
+    HOOK_SECRET="$(cat "$SECRET_FILE")"
+  fi
+fi
 
 # ── Remove mode ──────────────────────────────────────────────────────────────
 if [ "$1" = "--remove" ]; then
@@ -83,7 +99,9 @@ fi
 python3 -c "
 import json
 
-BRIDGE = '${BRIDGE_URL}'
+BRIDGE = '${HOOK_URL}'
+SECRET = '${HOOK_SECRET}'
+HEADERS = {'X-Claude-Watch-Secret': SECRET}
 
 # The hooks we want to install
 new_hooks = {
@@ -91,6 +109,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/tool-output',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }],
@@ -98,6 +117,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/session-start',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }],
@@ -105,6 +125,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/session-end',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }],
@@ -112,6 +133,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/permission',
+            'headers': HEADERS,
             'timeout': 600
         }]
     }],
@@ -119,6 +141,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/stop',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }],
@@ -126,6 +149,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/error',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }],
@@ -133,6 +157,7 @@ new_hooks = {
         'hooks': [{
             'type': 'http',
             'url': f'{BRIDGE}/hooks/error',
+            'headers': HEADERS,
             'timeout': 5
         }]
     }]
@@ -191,10 +216,12 @@ if command -v codex &>/dev/null; then
 #!/bin/bash
 # codex-watch: Runs Codex and streams events to Agent Watch bridge.
 # Drop-in replacement for `codex` — use `codex-watch` instead.
-BRIDGE_URL="http://127.0.0.1:${CLAUDE_WATCH_PORT:-7860}"
+API_URL="http://127.0.0.1:${CLAUDE_WATCH_PORT:-7860}"
+HOOK_URL="http://127.0.0.1:${CLAUDE_WATCH_HOOK_PORT:-7861}"
+SECRET="$(cat "$HOME/Library/Application Support/claude-watch/hook-secret" 2>/dev/null)"
 
 # If bridge isn't running, just run codex normally
-if ! curl -s --connect-timeout 1 "${BRIDGE_URL}/status" > /dev/null 2>&1; then
+if ! curl -s --connect-timeout 1 "${API_URL}/status" > /dev/null 2>&1; then
   exec codex "$@"
 fi
 
@@ -211,8 +238,9 @@ codex "$@" --json 2>/dev/null | while IFS= read -r line; do
   case "$TYPE" in
     item.completed)
       # Forward the whole event — let the bridge parse it
-      curl -s -X POST "${BRIDGE_URL}/hooks/tool-output" \
+      curl -s -X POST "${HOOK_URL}/hooks/tool-output" \
         -H "Content-Type: application/json" \
+        -H "X-Claude-Watch-Secret: ${SECRET}" \
         -d "$(echo "$line" | python3 -c "
 import sys,json
 e=json.load(sys.stdin)
@@ -234,8 +262,9 @@ else:
 " 2>/dev/null)" > /dev/null 2>&1 &
       ;;
     turn.completed)
-      curl -s -X POST "${BRIDGE_URL}/hooks/stop" \
+      curl -s -X POST "${HOOK_URL}/hooks/stop" \
         -H "Content-Type: application/json" \
+        -H "X-Claude-Watch-Secret: ${SECRET}" \
         -d '{"source":"codex"}' > /dev/null 2>&1 &
       ;;
   esac

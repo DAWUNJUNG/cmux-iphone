@@ -158,6 +158,28 @@ function generatePairingCode() {
 // the user re-pairs. With persistence, one pairing survives reboots.
 const TOKEN_FILE = path.join(os.homedir(), "Library", "Application Support", "claude-watch", "session-token");
 
+// Hooks run on a separate loopback-only listener with a shared secret, so the
+// phone-facing listener never exposes hook routes (defense-in-depth).
+const HOOK_PORT = 7861;
+const SECRET_FILE = path.join(os.homedir(), "Library", "Application Support", "claude-watch", "hook-secret");
+let hookSecret = null;
+
+function loadOrCreateHookSecret() {
+  try {
+    const s = fs.readFileSync(SECRET_FILE, "utf-8").trim();
+    if (s) { hookSecret = s; return s; }
+  } catch { /* create below */ }
+  const s = crypto.randomBytes(24).toString("hex");
+  try {
+    fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
+    fs.writeFileSync(SECRET_FILE, s, { mode: 0o600 });
+  } catch (err) {
+    log("warn", `Could not persist hook secret: ${err.message}`);
+  }
+  hookSecret = s;
+  return s;
+}
+
 function loadPersistedToken() {
   try {
     const t = fs.readFileSync(TOKEN_FILE, "utf-8").trim();
@@ -1760,30 +1782,43 @@ function isLocalRequest(req) {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
-async function onRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const routeKey = `${req.method} ${url.pathname}`;
+async function dispatch(req, res, routeKey) {
+  const handler = routes[routeKey];
+  if (!handler) return jsonResponse(res, 404, { error: "Not found" });
+  try {
+    await handler(req, res);
+  } catch (err) {
+    log("error", `Unhandled error in ${routeKey}:`, err.message);
+    if (!res.headersSent) {
+      jsonResponse(res, 500, { error: "Internal server error" });
+    }
+  }
+}
 
-  // /hooks/* are only ever called by the local Claude Code/Codex on this Mac.
-  // The server binds 0.0.0.0 for the phone, so reject remote callers here —
-  // otherwise anyone on the network could forge sessions / spam approvals.
-  if (url.pathname.startsWith("/hooks/") && !isLocalRequest(req)) {
+// Phone-facing listener (0.0.0.0:7860, reachable over Tailscale) — serves the
+// app API only; never exposes hook endpoints.
+async function onApiRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname.startsWith("/hooks/")) {
+    return jsonResponse(res, 404, { error: "Not found" });
+  }
+  await dispatch(req, res, `${req.method} ${url.pathname}`);
+}
+
+// Hook listener (127.0.0.1:7861) — local Claude/Codex hooks only, gated by a
+// shared secret header so other local processes can't forge sessions either.
+async function onHookRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (!url.pathname.startsWith("/hooks/")) {
+    return jsonResponse(res, 404, { error: "Not found" });
+  }
+  if (!isLocalRequest(req)) {
     return jsonResponse(res, 403, { error: "Forbidden" });
   }
-
-  const handler = routes[routeKey];
-  if (handler) {
-    try {
-      await handler(req, res);
-    } catch (err) {
-      log("error", `Unhandled error in ${routeKey}:`, err.message);
-      if (!res.headersSent) {
-        jsonResponse(res, 500, { error: "Internal server error" });
-      }
-    }
-  } else {
-    jsonResponse(res, 404, { error: "Not found" });
+  if (hookSecret && req.headers["x-claude-watch-secret"] !== hookSecret) {
+    return jsonResponse(res, 403, { error: "Forbidden" });
   }
+  await dispatch(req, res, `${req.method} ${url.pathname}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1801,14 +1836,14 @@ function tryListen(server, port) {
 }
 
 async function startServer() {
-  const server = http.createServer(onRequest);
+  const server = http.createServer(onApiRequest);
 
   let boundPort = null;
   // Honor an explicit PORT (env / installer arg); otherwise scan the range.
   const envPort = parseInt(process.env.PORT, 10);
   const candidatePorts = Number.isInteger(envPort) ? [envPort] : [];
   for (let p = PORT_RANGE_START; p <= PORT_RANGE_END; p++) {
-    if (p !== envPort) candidatePorts.push(p);
+    if (p !== envPort && p !== HOOK_PORT) candidatePorts.push(p); // never steal the hook port
   }
   for (const port of candidatePorts) {
     try {
@@ -1831,6 +1866,15 @@ async function startServer() {
   log("info", `Bridge server listening on 0.0.0.0:${boundPort}`);
 
   loadPersistedToken();
+  loadOrCreateHookSecret();
+
+  // Separate loopback-only listener for Claude/Codex hooks (secret-gated).
+  const hookServer = http.createServer(onHookRequest);
+  hookServer.on("error", (err) => log("error", `Hook listener error on :${HOOK_PORT}: ${err.message}`));
+  hookServer.listen(HOOK_PORT, "127.0.0.1", () => {
+    log("info", `Hook listener on 127.0.0.1:${HOOK_PORT} (secret-gated)`);
+  });
+
   startCmuxEventStream();
 
   const code = generatePairingCode();
