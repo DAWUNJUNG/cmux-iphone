@@ -638,27 +638,14 @@ function truncateText(value, maxLength = 80) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
-function buildCodexApprovalOptions(prefixRule = []) {
-  const options = [
-    {
-      label: "Yes, proceed",
-      description: "Run this command once",
-    },
+function buildCodexApprovalOptions(_prefixRule = []) {
+  // Short-term safety: only "allow once" and "deny". "Always allow" stays
+  // disabled until structured (app-server) approvals land — blind-typing a
+  // "don't ask again" into the TUI is too risky if the screen has changed.
+  return [
+    { label: "Yes, proceed", description: "Run this command once" },
+    { label: "No", description: "Deny this command and return to Codex" },
   ];
-
-  if (Array.isArray(prefixRule) && prefixRule.length > 0) {
-    options.push({
-      label: "Yes, don't ask again",
-      description: `Trust ${prefixRule.join(" ")} in future`,
-    });
-  }
-
-  options.push({
-    label: "No",
-    description: "Deny this command and return to Codex",
-  });
-
-  return options;
 }
 
 function recordCodexExecApprovalCandidate(line) {
@@ -1126,10 +1113,28 @@ async function handleCommand(req, res) {
   if (command !== undefined && body.terminalId) {
     if (!cmux.cmuxAvailable()) return jsonResponse(res, 503, { error: "cmux not available" });
     const promptText = String(command).replace(/\n$/, "");
+
+    // Safety guard for approval-style responses: if the phone sends the hash of
+    // the screen it rendered, refuse to type when the screen has since changed —
+    // so a "yes"/"no" can't land on a different prompt. Normal prompts omit the
+    // hash and are unaffected. (See the A-safely conditions for cmux approvals.)
+    if (body.expectedScreenHash) {
+      const currentHash = cmux.screenHash(body.terminalId);
+      if (currentHash !== body.expectedScreenHash) {
+        return jsonResponse(res, 409, {
+          error: "screen-changed",
+          currentHash,
+          currentScreen: cmux.readTerminalText(body.terminalId) || "",
+        });
+      }
+    }
+
     try {
-      cmux.sendInput(body.terminalId, promptText);
+      cmux.sendInput(body.terminalId, promptText, body.submit !== false);
       log("info", `cmux mobile input -> terminal ${String(body.terminalId).slice(0, 8)}: "${promptText.slice(0, 80)}"`);
-      return jsonResponse(res, 200, { ok: true, terminalId: body.terminalId, via: "cmux-mobile" });
+      // Re-read so the caller can confirm the approval prompt was consumed.
+      const afterHash = body.expectedScreenHash ? cmux.screenHash(body.terminalId) : undefined;
+      return jsonResponse(res, 200, { ok: true, terminalId: body.terminalId, via: "cmux-mobile", afterHash });
     } catch (err) {
       return jsonResponse(res, 500, { error: `cmux input failed: ${err.message}` });
     }
@@ -1718,7 +1723,10 @@ function handleCmuxScreen(req, res) {
   const id = url.searchParams.get("id");
   if (!id) return jsonResponse(res, 400, { error: "Missing id" });
   const text = cmux.readTerminalText(id);
-  return jsonResponse(res, 200, { id, text: text || "" });
+  // Include the screen hash so the phone can echo it back as expectedScreenHash
+  // when answering an approval (the bridge rejects if the screen changed since).
+  const hash = text == null ? null : crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
+  return jsonResponse(res, 200, { id, text: text || "", hash });
 }
 
 // --- cmux events -> SSE (live mirror updates) ------------------------------

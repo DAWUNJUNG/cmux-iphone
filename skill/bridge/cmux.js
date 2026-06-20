@@ -20,6 +20,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 function findCmuxBin() {
   const envBin = process.env.CMUX_BIN;
@@ -212,6 +213,16 @@ export function readTerminalText(id) {
   } catch {
     return null;
   }
+}
+
+// Short hash of a terminal's current screen. Used to detect that the screen
+// changed between when the phone rendered an approval and when the response is
+// sent — so a "yes"/"no" can't land on a different prompt. Returns null if the
+// screen can't be read.
+export function screenHash(id) {
+  const t = readTerminalText(id);
+  if (t == null) return null;
+  return crypto.createHash("sha256").update(t).digest("hex").slice(0, 16);
 }
 
 // Send text to a terminal by id, then submit with Enter (so prompts from the
