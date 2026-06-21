@@ -1,31 +1,30 @@
-// cmux.js — inject prompts / approval keys into LIVE cmux agent surfaces.
+// cmux.js — mirror live cmux workspaces and inject prompts/approvals into them.
 //
 // Why this exists:
 //   The stock bridge, for an external (cmux-owned) session, falls back to a
 //   DETACHED `claude -p ... --continue` run — a separate headless process, NOT
 //   the interactive agent you are watching. With cmux we instead type straight
-//   into the live Claude/Codex TUI surface, so a prompt sent from the phone
-//   lands in the exact session on screen.
+//   into the live Claude/Codex terminal, so a prompt sent from the phone lands
+//   in the exact session on screen.
 //
-// Mapping strategy (no Claude/Codex change needed):
-//   1. `cmux top --all --processes --format tsv` lists every surface and the
-//      agent process running under it  ->  (pid, surface-ref, name).
-//   2. `lsof -a -p <pid> -d cwd` gives that process's working directory.
-//   3. Match the bridge session's cwd (from hooks) to find the surface ref.
-//   4. `cmux send --surface <ref> -- "<text>"` + `cmux send-key <ref> enter`.
+// How (cmux >= 0.63.2, "mobile" RPC over the control socket):
+//   - mobile.workspace.list           — the workspace/terminal tree
+//   - mobile.terminal.replay          — a terminal's rendered screen
+//   - mobile.terminal.input           — type text/keys into a terminal (UUID)
+//   We resolve a session's cwd to a terminal UUID from the tree, then inject via
+//   mobile.terminal.input. (The older `cmux top` + `cmux send --surface` path is
+//   gone — `top` doesn't exist in current cmux and `send --surface <uuid>` is
+//   rejected for mobile terminals.) These are private RPCs — see cmuxReachable().
 //
-// All cmux/lsof calls use execFile (no shell) so prompt text can never be
-// shell-injected, and run async so they never block Node's event loop. Every
-// function is best-effort: on any failure it throws and the caller falls back
-// to the original detached behaviour.
+// All cmux calls use execFile (no shell), run async (never block the loop), and
+// are best-effort: on failure they throw and the caller falls back.
 
 import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { promisify } from "node:util";
 
-// Async exec so cmux/lsof calls never block Node's event loop (each cmux call
-// can take up to ~8s; sync calls would stall SSE + every other request).
+// Async exec so cmux calls never block Node's event loop (each can take ~8s).
 // execFileSync is kept only for one-time module-load discovery (findCmuxBin).
 const execFileP = promisify(execFile);
 
@@ -48,7 +47,6 @@ function findCmuxBin() {
 }
 
 const CMUX_BIN = findCmuxBin();
-const LSOF_BIN = "/usr/sbin/lsof";
 
 // Socket password (cmux socketControlMode=password). Lets the launchd bridge —
 // which runs OUTSIDE cmux — authenticate to the cmux control socket.
@@ -72,88 +70,29 @@ export function cmuxAvailable() {
   return CMUX_BIN !== null;
 }
 
-async function processCwd(pid) {
-  try {
-    const { stdout } = await execFileP(LSOF_BIN, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
-      encoding: "utf-8",
-      timeout: 5000,
-    });
-    const line = stdout.split("\n").find((l) => l.startsWith("n"));
-    return line ? line.slice(1) : null;
-  } catch {
-    return null;
+// Real reachability: the binary exists AND the control socket answers an RPC.
+// (cmuxAvailable() only checks the binary; cmux can be installed but not running,
+// or the socket password not configured.) Used by setup/doctor to decide the
+// runner and to surface an honest "cmux RPC FAIL".
+export async function cmuxReachable() {
+  if (!CMUX_BIN) return false;
+  const data = await mobileWorkspaces();
+  return data != null && Array.isArray(data.workspaces);
+}
+
+// Ensure an "Agent Bridge" cmux workspace exists, running the supervisor script
+// INSIDE cmux (the only context that can drive the control socket). Idempotent:
+// skips if one already exists. Returns { created }; throws if the RPC/CLI fails.
+export async function ensureBridgeWorkspace(scriptPath) {
+  const data = await mobileWorkspaces();
+  if (data && Array.isArray(data.workspaces) && data.workspaces.some((w) => w.title === "Agent Bridge")) {
+    return { created: false };
   }
+  await cmux(["new-workspace", "--name", "Agent Bridge", "--command", String(scriptPath)]);
+  return { created: true };
 }
 
 const norm = (p) => (typeof p === "string" ? p.replace(/\/+$/, "") : p);
-
-// Resolve a session's cwd + agent to a cmux surface ref (e.g. "surface:16").
-// Returns null if cmux is unavailable or no matching live surface is found.
-export async function resolveSurface(cwd, agent = "claude") {
-  if (!CMUX_BIN) return null;
-  let tsv;
-  try {
-    tsv = await cmux(["top", "--all", "--processes", "--format", "tsv"]);
-  } catch {
-    return null;
-  }
-  const needle = agent === "codex" ? "codex" : "claude";
-  const target = norm(cwd);
-
-  // Collect one entry per live surface running this agent, with its cwd.
-  const candidates = [];
-  const seen = new Set();
-  for (const row of tsv.split("\n")) {
-    // TSV columns: cpu  mem  count  type  id  parent  name
-    const cols = row.split("\t");
-    if (cols[3] !== "process") continue;
-    const name = (cols[6] || "").toLowerCase();
-    const parent = cols[5] || "";
-    if (!name.includes(needle)) continue;
-    if (!parent.startsWith("surface:")) continue;
-    if (seen.has(parent)) continue; // one entry per surface
-    seen.add(parent);
-    candidates.push({ surface: parent, cwd: norm(await processCwd(cols[4])) });
-  }
-
-  if (candidates.length === 0) return null;
-
-  // 1) Exact cwd match — most precise.
-  if (target) {
-    const exact = candidates.find((c) => c.cwd === target);
-    if (exact) return exact.surface;
-
-    // 2) Path-relationship match — the session's cwd is a sub/parent directory
-    //    of a pane's cwd (hooks sometimes report a subdir of the launch dir).
-    const rel = candidates.find(
-      (c) => c.cwd && (target.startsWith(c.cwd + "/") || c.cwd.startsWith(target + "/"))
-    );
-    if (rel) return rel.surface;
-  }
-
-  // 3) Exactly one live pane for this agent — unambiguous, use it even if the
-  //    cwd didn't line up (common: a single Claude/Codex pane on screen).
-  if (candidates.length === 1) return candidates[0].surface;
-
-  return null;
-}
-
-// Type a prompt into a surface and submit it (text, then Enter).
-export async function sendPrompt(surface, text) {
-  const body = String(text).replace(/[\r\n]+$/, "");
-  await cmux(["send", "--surface", surface, "--", body]);
-  await cmux(["send-key", "--surface", surface, "enter"]);
-}
-
-// Send raw characters (no Enter) — used for single-key TUI answers like "y".
-export async function sendChars(surface, chars) {
-  await cmux(["send", "--surface", surface, "--", String(chars)]);
-}
-
-// Send a named key event — e.g. "enter", "escape", "ctrl+c".
-export async function sendKey(surface, key) {
-  await cmux(["send-key", "--surface", surface, key]);
-}
 
 // Resolve a session's cwd to a live cmux TERMINAL UUID (not a surface ref).
 // Uses mobile.workspace.list (which works for mobile terminals, unlike `cmux

@@ -1263,22 +1263,24 @@ async function handleCommand(req, res) {
           return jsonResponse(res, 400, { error: "Empty command" });
         }
 
-        // Preferred: type straight into the LIVE cmux agent surface for this
-        // session, so the prompt lands in the interactive Claude/Codex you are
-        // watching (not a detached headless run).
+        // Preferred: type straight into the LIVE cmux terminal for this session,
+        // so the prompt lands in the interactive Claude/Codex you are watching
+        // (not a detached headless run). Resolve by cwd via mobile.workspace.list
+        // + inject via mobile.terminal.input (the path that actually reaches a
+        // mobile cmux terminal).
         if (cmux.cmuxAvailable()) {
-          const surface = await cmux.resolveSurface(targetSession.cwd, targetSession.agent);
-          if (surface) {
+          const terminalId = await cmux.resolveTerminalId(targetSession.cwd);
+          if (terminalId) {
             try {
-              await cmux.sendPrompt(surface, promptText);
-              log("info", `cmux send -> ${surface} (${targetSession.agent} @ ${targetSession.cwd}): "${promptText.slice(0, 80)}"`);
+              await cmux.sendInput(terminalId, promptText, true);
+              log("info", `cmux input -> terminal ${terminalId.slice(0, 8)} (${targetSession.cwd}): "${promptText.slice(0, 80)}"`);
               pushSseEvent("pty-output", { text: `> ${promptText}` }, sessionId);
-              return jsonResponse(res, 200, { ok: true, sessionId, agent: targetSession.agent, via: "cmux", surface });
+              return jsonResponse(res, 200, { ok: true, sessionId, agent: targetSession.agent, via: "cmux", terminalId });
             } catch (err) {
-              log("warn", `cmux send failed (${err.message}); falling back to detached run`);
+              log("warn", `cmux input failed (${err.message}); falling back to detached run`);
             }
           } else {
-            log("warn", `No live cmux surface for ${targetSession.agent} @ ${targetSession.cwd}; falling back to detached run`);
+            log("warn", `No live cmux terminal for ${targetSession.cwd}; falling back to detached run`);
           }
         }
 

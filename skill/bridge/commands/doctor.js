@@ -28,7 +28,19 @@ export async function run() {
   add(claude ? "PASS" : "WARN", "Claude Code", claude || "not found");
   const codex = which("codex");
   add(codex ? "PASS" : "WARN", "Codex", codex || "not found (optional)");
-  add(cmux.cmuxAvailable() ? "PASS" : "WARN", "cmux", cmux.cmuxAvailable() ? "available" : "not found (hook/phone only)");
+
+  // Separate "installed" from "RPC reachable" — a binary can exist while the
+  // control socket is down / unconfigured, which breaks the live mirror.
+  if (!cmux.cmuxAvailable()) {
+    add("WARN", "cmux", "not found (hook/phone sessions only)");
+  } else {
+    const tree = await cmux.mobileWorkspaces();
+    if (tree && Array.isArray(tree.workspaces)) {
+      add("PASS", "cmux RPC", `mobile.workspace.list OK (${tree.workspaces.length} workspaces)`);
+    } else {
+      add("FAIL", "cmux RPC", "binary present but socket unreachable (cmux running? password set?)");
+    }
+  }
 
   const up = await bridgeUp();
   add(up ? "PASS" : "FAIL", "Bridge", up ? `/health OK on :${cfg.ports.apiPort}` : "not running");
