@@ -644,6 +644,7 @@ private struct CmuxTerminalView: View {
     @State private var screenHash: String? = nil
     @State private var promptText: String = ""
     @State private var changedNotice = false
+    @State private var showModelSheet = false
     @FocusState private var inputFocused: Bool
     private let pollTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -664,6 +665,19 @@ private struct CmuxTerminalView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showModelSheet = true } label: {
+                    Image(systemName: "cpu").foregroundStyle(Color.claudeOrange)
+                }
+            }
+        }
+        .sheet(isPresented: $showModelSheet) {
+            ModelEffortSheet { cmd in
+                relayService.sendCmux(terminalId: terminalId, text: cmd)
+                Task { try? await Task.sleep(nanoseconds: 600_000_000); await refresh() }
+            }
+        }
         .task(id: terminalId) { await refresh() }
         .onReceive(pollTimer) { _ in Task { await refresh() } }
         .onChange(of: relayService.cmuxScreenTick) { _, _ in Task { await refresh() } }
@@ -820,6 +834,77 @@ private struct CmuxTerminalView: View {
             try? await Task.sleep(nanoseconds: 500_000_000)
             await refresh()
         }
+    }
+}
+
+/// Claude model + effort picker. Sends `/model <name>` / `/effort <level>` to
+/// the active terminal (Claude reads these slash commands).
+private struct ModelEffortSheet: View {
+    let onSend: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private let models: [(String, String)] = [
+        ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku"),
+    ]
+    private let efforts: [String] = ["low", "medium", "high", "xhigh", "max", "ultracode"]
+    private let cols = [GridItem(.adaptive(minimum: 92), spacing: 8)]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        section("모델") {
+                            ForEach(models, id: \.1) { (label, name) in
+                                chip(label, color: .claudeOrange) { onSend("/model \(name)"); dismiss() }
+                            }
+                        }
+                        section("Effort") {
+                            ForEach(efforts, id: \.self) { lvl in
+                                chip(lvl, color: .claudeAmber) { onSend("/effort \(lvl)"); dismiss() }
+                            }
+                        }
+                        Text("선택하면 해당 터미널의 Claude에 슬래시 명령으로 전송됩니다.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.subtleText)
+                    }
+                    .padding(16)
+                }
+            }
+            .navigationTitle("Claude 설정")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("닫기") { dismiss() }.foregroundStyle(Color.claudeOrange)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    @ViewBuilder
+    private func section<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.textPrimary)
+            LazyVGrid(columns: cols, alignment: .leading, spacing: 8) { content() }
+        }
+    }
+
+    private func chip(_ label: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(color.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.4), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 }
 
