@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test \"test/unit/*.test.mjs\"",
+    "test:integration": "CW_INTEGRATION=1 node --test \"test/integration/*.test.mjs\""
   },
   "engines": {
     "node": ">=18.0.0"

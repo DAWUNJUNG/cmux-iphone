@@ -48,7 +48,9 @@ class WatchBridgeClient: ObservableObject {
 
     private func discoverLocalhost() async -> URL? {
         for port in UInt16(7860)...UInt16(7869) {
-            let url = URL(string: "http://127.0.0.1:\(port)/status")!
+            // Probe the PUBLIC /health endpoint — /status now requires auth (401),
+            // so a pre-pair discovery hitting /status would always fail.
+            let url = URL(string: "http://127.0.0.1:\(port)/health")!
             var request = URLRequest(url: url)
             request.timeoutInterval = 2
             do {

@@ -82,8 +82,9 @@ echo "  Bridge URL: ${BRIDGE_URL}"
 echo "  Settings:   ${SETTINGS}"
 echo ""
 
-# Verify bridge is reachable
-if curl -s --connect-timeout 2 "${BRIDGE_URL}/status" > /dev/null 2>&1; then
+# Verify bridge is reachable via the public /health probe (/status needs auth).
+# -f makes curl fail on non-2xx so a 401/404 isn't reported as RUNNING.
+if curl -sf --connect-timeout 2 "${BRIDGE_URL}/health" > /dev/null 2>&1; then
   echo "  Bridge status: RUNNING"
 else
   echo "  Bridge status: NOT RUNNING (hooks will work once you start the bridge)"

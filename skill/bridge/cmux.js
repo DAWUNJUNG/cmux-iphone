@@ -196,6 +196,33 @@ export async function resolveTerminalId(cwd) {
 //   { id: null, ambiguous } — zero (no auto-pin) or many (fail closed)
 const normScreen = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
 
+// Pure selection logic (no cmux/IO) — unit-testable. Given each terminal's
+// VISIBLE screen text, pick the one showing this approval command. A terminal
+// is a candidate only if its visible screen has the codex approval markers
+// ("Yes, proceed" + "No"); a plain shell (even with the command in scrollback)
+// is excluded. The command disambiguates multiple visible approval screens.
+//   entries: [{ id, text }]   text = VISIBLE rows only (no scrollback)
+export function selectCodexApprovalTerminal(entries, command) {
+  const cmdNeedle = normScreen(command).slice(0, 40);
+  const candidates = [];
+  for (const e of entries || []) {
+    const n = normScreen(e.text);
+    const isApprovalScreen = /yes,?\s+proceed/.test(n) && /\bno\b/.test(n);
+    if (!isApprovalScreen) continue;
+    candidates.push({ id: e.id, hasCmd: cmdNeedle.length >= 6 && n.includes(cmdNeedle) });
+  }
+  if (candidates.length === 0) return { id: null, ambiguous: false };
+  if (candidates.length === 1) return { id: candidates[0].id, ambiguous: false };
+  const byCmd = candidates.filter((c) => c.hasCmd);
+  if (byCmd.length === 1) return { id: byCmd[0].id, ambiguous: false };
+  return { id: null, ambiguous: true };
+}
+
+// Find the live terminal that is actually SHOWING a codex exec-approval prompt,
+// so the answer ("y"/Esc) lands on the RIGHT pane. cwd alone is ambiguous (a
+// shell and a codex pane share a cwd), and a command can linger in a shell's
+// SCROLLBACK — so we read ONLY the VISIBLE rows and delegate to the pure
+// selector above. Returns { id } (exactly one) or { id: null, ambiguous }.
 export async function findCodexApprovalTerminal(command) {
   const data = await mobileWorkspaces();
   if (!data || !Array.isArray(data.workspaces)) return { id: null, ambiguous: false };
@@ -207,23 +234,12 @@ export async function findCodexApprovalTerminal(command) {
   }
   if (ids.length === 0) return { id: null, ambiguous: false };
 
-  const cmdNeedle = normScreen(command).slice(0, 40);
-  const candidates = [];
+  const entries = [];
   for (const id of ids) {
     const vis = await readVisibleText(id);          // VISIBLE rows only — never scrollback
-    if (!vis) continue;
-    const n = normScreen(vis);
-    // Codex exec-approval markers (a shell scrollback can't show both).
-    const isApprovalScreen = /yes,?\s+proceed/.test(n) && /\bno\b/.test(n);
-    if (!isApprovalScreen) continue;
-    candidates.push({ id, hasCmd: cmdNeedle.length >= 6 && n.includes(cmdNeedle) });
+    if (vis) entries.push({ id, text: vis });
   }
-  if (candidates.length === 0) return { id: null, ambiguous: false };
-  if (candidates.length === 1) return { id: candidates[0].id, ambiguous: false };
-  // Multiple panes visibly showing an approval — disambiguate by the command.
-  const byCmd = candidates.filter((c) => c.hasCmd);
-  if (byCmd.length === 1) return { id: byCmd[0].id, ambiguous: false };
-  return { id: null, ambiguous: true };
+  return selectCodexApprovalTerminal(entries, command);
 }
 
 // ---------------------------------------------------------------------------

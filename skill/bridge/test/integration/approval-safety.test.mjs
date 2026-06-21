@@ -1,11 +1,14 @@
 // Integration tests for the bridge's approval-safety invariants.
 //
-// Runs against the LIVE bridge (127.0.0.1:7860) + live cmux, since the bridge's
-// codex-approval logic is tightly coupled to cmux and the HTTP layer. Spins up
-// throwaway cmux workspaces, asserts, and tears them down. Skips (not fails)
-// when the prerequisites (running bridge, cmux, token) are absent.
+// Runs against the LIVE bridge (127.0.0.1:7860) + live cmux. Spins up throwaway
+// cmux workspaces, asserts, and tears them down.
 //
-//   node --test test/approval-safety.test.mjs   (or: npm test)
+// Gating: set CW_INTEGRATION=1 to REQUIRE the prerequisites (running bridge,
+// cmux, token); missing prereqs then FAIL — this is the real integration gate
+// (`npm run test:integration`). Without that env var the tests SKIP, so a plain
+// `npm test` (unit only) never silently passes against a dead/absent daemon.
+//
+//   CW_INTEGRATION=1 node --test test/integration/
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -71,14 +74,25 @@ async function newScratch(name, command) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function typeInto(id, text) { await rpc("mobile.terminal.input", { terminal_id: id, text }); }
 
+const INTEGRATION = process.env.CW_INTEGRATION === "1";
 let prereqOK = false;
+let prereqReason = "";
 
 before(async () => {
-  if (!CMUX || !PW || !TOKEN) return;
-  try {
-    const h = await http("GET", "/health");
-    prereqOK = h.status === 200;
-  } catch { prereqOK = false; }
+  if (!CMUX) prereqReason = "cmux binary not found";
+  else if (!PW) prereqReason = "cmux password file missing";
+  else if (!TOKEN) prereqReason = "bridge session token missing";
+  else {
+    try {
+      const h = await http("GET", "/health");
+      if (h.status === 200) prereqOK = true;
+      else prereqReason = `/health returned ${h.status}`;
+    } catch (e) { prereqReason = `bridge unreachable: ${e.message}`; }
+  }
+  // In integration mode a missing prerequisite is a FAILURE, not a skip.
+  if (!prereqOK && INTEGRATION) {
+    throw new Error(`CW_INTEGRATION=1 but prerequisites unmet: ${prereqReason}`);
+  }
 });
 
 after(async () => {
@@ -88,7 +102,7 @@ after(async () => {
 });
 
 function need(t) {
-  if (!prereqOK) { t.skip("bridge/cmux/token not available — skipping integration test"); return false; }
+  if (!prereqOK) { t.skip(`prereqs unmet (${prereqReason}); set CW_INTEGRATION=1 to require them`); return false; }
   return true;
 }
 
@@ -143,28 +157,27 @@ test("POST /command rejects a stale expectedScreenHash (409)", async (t) => {
 });
 
 // --- 4) codex approval terminal matching (visible + markers) ---------------
-test("findCodexApprovalTerminal: excludes a shell, pins the approval screen, fail-closes on ambiguity", async (t) => {
+// NOTE: the detailed selection/ambiguity logic is covered deterministically in
+// test/unit/codex-approval-select.test.mjs (no live state). This integration
+// test only verifies the cmux WIRING — that readVisibleText feeds the selector —
+// via the one property that holds regardless of what else is on screen in the
+// live environment: a plain shell (no approval markers) is NEVER pinned, even
+// when it visibly contains the command. (A real Claude/codex pane elsewhere may
+// legitimately contain the marker words, which in production fail-closes safely;
+// asserting global uniqueness here would be env-dependent and flaky.)
+test("findCodexApprovalTerminal never pins a markerless shell that shows the command", async (t) => {
   if (!need(t)) return;
-  const cmuxMod = await import("../cmux.js");
+  const cmuxMod = await import("../../cmux.js");
   const CMD = "rm_rf_build_TESTSENTINEL_zz";
 
-  // a) plain shell that ran the command (in scrollback/visible) but no markers
   const shell = await newScratch("test-ap-shell");
   await typeInto(shell, `echo ${CMD}\r`);
-  // b) a screen that looks like a codex approval (markers + command)
-  const codex = await newScratch("test-ap-codex");
-  await typeInto(codex, `printf 'Allow command?\\n  ${CMD}\\n  1. Yes, proceed\\n  2. No\\n'\r`);
-  await sleep(900);
+  await sleep(1000);
 
-  const r1 = await cmuxMod.findCodexApprovalTerminal(CMD);
-  assert.equal(r1.id, codex, "should pin the marker-bearing approval screen, not the shell");
-  assert.equal(r1.ambiguous, false);
-
-  // c) a second approval screen → ambiguous, fail closed (id null)
-  const codex2 = await newScratch("test-ap-codex2");
-  await typeInto(codex2, `printf 'Allow command?\\n  ${CMD}\\n  1. Yes, proceed\\n  2. No\\n'\r`);
-  await sleep(900);
-  const r2 = await cmuxMod.findCodexApprovalTerminal(CMD);
-  assert.equal(r2.id, null, "two approval screens → no auto-pin");
-  assert.equal(r2.ambiguous, true);
+  // Read repeatedly; the shell id must never come back as the pinned terminal.
+  for (let i = 0; i < 5; i++) {
+    const r = await cmuxMod.findCodexApprovalTerminal(CMD);
+    assert.notEqual(r.id, shell, "a markerless shell must never be pinned");
+    await sleep(200);
+  }
 });
