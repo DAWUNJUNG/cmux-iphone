@@ -26,6 +26,10 @@ struct ApprovalRequest: Identifiable, Codable {
     /// Last error from a failed answer attempt (status == .failed), for retry UI.
     var lastError: String? = nil
 
+    /// Latest live terminal screen, captured after a 409 (screen changed) so the
+    /// user can re-confirm what they're approving before retrying.
+    var latestScreen: String? = nil
+
     /// Stable identity for de-duplicating re-sent approvals (bridge re-sends
     /// pending permission-requests on every SSE reconnect).
     var dedupeKey: String { permissionId ?? id.uuidString }

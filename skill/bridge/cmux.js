@@ -185,6 +185,39 @@ export async function resolveTerminalId(cwd) {
   return null;
 }
 
+// Find the live terminal that is actually SHOWING a given approval command, by
+// reading each terminal's screen and matching the command text. This is how a
+// codex approval is pinned to the RIGHT pane — cwd alone is ambiguous (a plain
+// shell and a codex pane can share a cwd). Returns:
+//   { id }                 — exactly one terminal shows the command (safe to pin)
+//   { id: null, ambiguous } — zero or many candidates (caller must fail closed)
+const normScreen = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+export async function findCodexApprovalTerminal(command) {
+  const needleFull = normScreen(command);
+  // Too short/generic to disambiguate safely.
+  if (needleFull.length < 6) return { id: null, ambiguous: true };
+  const needle = needleFull.slice(0, 60);
+
+  const data = await mobileWorkspaces();
+  if (!data || !Array.isArray(data.workspaces)) return { id: null, ambiguous: false };
+
+  const ids = [];
+  for (const w of data.workspaces) {
+    if (w.title === "Agent Bridge") continue;
+    for (const t of w.terminals || []) ids.push(t.id);
+  }
+  if (ids.length === 0) return { id: null, ambiguous: false };
+
+  const matches = [];
+  for (const id of ids) {
+    const text = await readTerminalText(id);
+    if (text && normScreen(text).includes(needle)) matches.push(id);
+  }
+  if (matches.length === 1) return { id: matches[0], ambiguous: false };
+  return { id: null, ambiguous: matches.length > 1 };
+}
+
 // ---------------------------------------------------------------------------
 // Mobile mirror API (cmux rpc) — drives the phone's live cmux view.
 // ---------------------------------------------------------------------------

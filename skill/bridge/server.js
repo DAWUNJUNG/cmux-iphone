@@ -682,16 +682,22 @@ async function surfaceCodexExecApproval(sessionId) {
   const existingId = codexSyntheticPermissionBySession.get(sessionId);
   if (existingId) return;
 
-  // Pin the live terminal + snapshot its screen hash, so the phone can echo the
-  // hash back and the bridge refuses (409) if the screen changed before the
-  // answer lands — and so the answer goes to THIS terminal, not a cwd lookup.
+  // Pin the live terminal by matching the approval COMMAND against each
+  // terminal's screen (cwd alone is ambiguous — a shell and a codex pane can
+  // share a cwd). Only pin when exactly one terminal shows the command; if
+  // zero/many, leave terminalId null so answering fails closed (the phone shows
+  // an error rather than risking keystrokes into the wrong pane). Snapshot the
+  // screen hash so the answer can be verified against the live screen.
   let terminalId = null;
   let screenHash = null;
+  let ambiguousTerminal = false;
   if (cmux.cmuxAvailable()) {
     try {
-      terminalId = await cmux.resolveTerminalId(slot.cwd);
+      const found = await cmux.findCodexApprovalTerminal(candidate.command);
+      terminalId = found.id;
+      ambiguousTerminal = found.ambiguous;
       if (terminalId) screenHash = await cmux.screenHash(terminalId);
-    } catch { /* fall back to unpinned (cwd-resolved) behavior */ }
+    } catch { /* leave unpinned -> fail closed on answer */ }
   }
 
   const permissionId = crypto.randomUUID();
@@ -714,12 +720,14 @@ async function surfaceCodexExecApproval(sessionId) {
       ],
     },
   };
-  codexSyntheticPermissions.set(permissionId, { sessionId, optionCount: options.length, terminalId, screenHash, payload });
+  codexSyntheticPermissions.set(permissionId, {
+    sessionId, optionCount: options.length, terminalId, screenHash, ambiguousTerminal, payload,
+  });
   codexSyntheticPermissionBySession.set(sessionId, permissionId);
 
   pushSseEvent("permission-request", payload, sessionId);
 
-  log("info", `Surfaced Codex approval ${permissionId} for session ${sessionId}${terminalId ? ` (terminal ${terminalId.slice(0, 8)})` : ""}`);
+  log("info", `Surfaced Codex approval ${permissionId} for session ${sessionId}${terminalId ? ` (terminal ${terminalId.slice(0, 8)})` : ambiguousTerminal ? " (AMBIGUOUS terminal — answer will fail closed)" : " (no terminal matched)"}`);
 }
 
 function clearCodexSyntheticPermissionForSession(sessionId, reason = "cleared") {
@@ -745,59 +753,50 @@ async function resolveCodexSyntheticPermission(permissionId, selectedOption, opt
   const dontAsk = synthetic.optionCount === 3
     && (idx === 1 || /^yes,?\s*don't ask again/i.test(String(selectedOption || "")));
 
-  // Preferred: type into the LIVE codex terminal that was PINNED when the
-  // approval was surfaced (by UUID, not a fresh cwd lookup), guarded by the
-  // screen hash so an answer can't land on a wrong/changed screen.
-  if (cmux.cmuxAvailable()) {
-    const terminalId = synthetic.terminalId || opts.terminalId || (await cmux.resolveTerminalId(slot.cwd));
-    if (terminalId) {
-      // If the phone pinned a different terminal than we surfaced on, refuse.
-      if (opts.terminalId && synthetic.terminalId && opts.terminalId !== synthetic.terminalId) {
-        return { conflict: true, reason: "terminal-mismatch" };
-      }
-      // Screen-hash guard: refuse (409) if the screen changed since the user saw it.
-      if (opts.expectedScreenHash) {
-        const currentHash = await cmux.screenHash(terminalId);
-        if (currentHash !== opts.expectedScreenHash) {
-          return { conflict: true, reason: "screen-changed", currentHash };
-        }
-      }
-      try {
-        if (proceed) {
-          await cmux.sendInput(terminalId, "y", false);
-        } else if (dontAsk) {
-          await cmux.sendInput(terminalId, "2", false);
-          await cmux.sendNamedKey(terminalId, "enter");
-        } else {
-          await cmux.sendNamedKey(terminalId, "escape"); // deny / cancel
-        }
-        clearCodexSyntheticPermissionForSession(synthetic.sessionId, "resolved");
-        log("info", `cmux codex approval ${permissionId} -> terminal ${terminalId.slice(0, 8)} (${slot.cwd})`);
-        return true;
-      } catch (err) {
-        log("warn", `cmux codex approval failed (${err.message}); falling back to PTY`);
-      }
+  // Codex approvals inject keystrokes into a LIVE terminal, so this path is
+  // FAIL-CLOSED: any uncertainty about which terminal, or whether its screen is
+  // still the one being answered, keeps the card and surfaces an error. There
+  // is deliberately NO PTY fallback — attaching a 2nd codex via `resume` would
+  // report success while the real cmux codex keeps waiting.
+  if (!cmux.cmuxAvailable()) {
+    return { status: 503, reason: "cmux-unavailable" };
+  }
+  // 1) The terminal must have been UNAMBIGUOUSLY pinned at surface time.
+  const terminalId = synthetic.terminalId;
+  if (!terminalId) {
+    return { status: 409, reason: synthetic.ambiguousTerminal ? "ambiguous-terminal" : "no-terminal" };
+  }
+  // 2) The phone MUST echo the same terminal we pinned (no implicit cwd lookup).
+  if (!opts.terminalId || opts.terminalId !== terminalId) {
+    return { status: 409, reason: "terminal-mismatch" };
+  }
+  // 3) The phone MUST supply a hash, and it must equal the LIVE screen hash —
+  //    i.e. the phone is answering the screen currently on the terminal
+  //    (TOCTOU-safe). On a stale hash we return currentHash so the phone can
+  //    re-show the live screen and let the user re-confirm with the fresh hash.
+  const currentHash = await cmux.screenHash(terminalId);
+  if (!currentHash) {
+    return { status: 503, reason: "screen-unreadable" };
+  }
+  if (!opts.expectedScreenHash || opts.expectedScreenHash !== currentHash) {
+    return { status: 409, reason: "screen-changed", currentHash };
+  }
+  // All checks passed — inject. cmux failure is fail-closed (503), never PTY.
+  try {
+    if (proceed) {
+      await cmux.sendInput(terminalId, "y", false);
+    } else if (dontAsk) {
+      await cmux.sendInput(terminalId, "2", false);
+      await cmux.sendNamedKey(terminalId, "enter");
+    } else {
+      await cmux.sendNamedKey(terminalId, "escape"); // deny / cancel
     }
+  } catch (err) {
+    log("warn", `cmux codex approval send failed (${err.message}); keeping card (no PTY fallback)`);
+    return { status: 503, reason: "cmux-send-failed" };
   }
-
-  const proc = slot.ptyProcess || attachPtyToSession(slot);
-  if (!proc || !proc.stdin) return false;
-
-  let input = "\u001b";
-  const normalizedIndex = Number.isInteger(optionIndex) ? optionIndex : -1;
-
-  if (normalizedIndex === 0 || /^yes,?\s*proceed/i.test(String(selectedOption || ""))) {
-    input = "y";
-  } else if (
-    synthetic.optionCount === 3
-    && (normalizedIndex === 1 || /^yes,?\s*don't ask again/i.test(String(selectedOption || "")))
-  ) {
-    input = "2\n";
-  }
-
-  proc.stdin.write(input);
   clearCodexSyntheticPermissionForSession(synthetic.sessionId, "resolved");
-  log("info", `Resolved Codex approval ${permissionId} for session ${synthetic.sessionId}`);
+  log("info", `cmux codex approval ${permissionId} -> terminal ${terminalId.slice(0, 8)}`);
   return true;
 }
 
@@ -1236,10 +1235,11 @@ async function handleCommand(req, res) {
     if (resolvedSynthetic === true) {
       return jsonResponse(res, 200, { ok: true });
     }
-    if (resolvedSynthetic && resolvedSynthetic.conflict) {
-      // Screen changed (or wrong terminal) — phone must re-check before answering.
-      return jsonResponse(res, 409, {
-        error: "screen-changed",
+    if (resolvedSynthetic && typeof resolvedSynthetic === "object" && resolvedSynthetic.status) {
+      // Fail-closed: 409 (screen changed / terminal can't be pinned, phone must
+      // re-check) or 503 (cmux unavailable/send failed) — card stays either way.
+      return jsonResponse(res, resolvedSynthetic.status, {
+        error: resolvedSynthetic.reason || "codex-approval-unresolved",
         reason: resolvedSynthetic.reason,
         currentHash: resolvedSynthetic.currentHash,
       });

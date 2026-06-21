@@ -186,14 +186,30 @@ struct ApprovalCard: View {
                     .foregroundStyle(Color.subtleText)
             }
         case .failed:
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.denyRed)
-                Text(approval.lastError ?? "전송 실패 — 위 버튼으로 다시 시도하세요")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.denyRed)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.denyRed)
+                    Text(approval.lastError ?? "전송 실패 — 위 버튼으로 다시 시도하세요")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.denyRed)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let screen = approval.latestScreen, !screen.isEmpty {
+                    ScrollView {
+                        Text(screen.split(separator: "\n").suffix(24).joined(separator: "\n"))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(height: 130)
+                    .padding(8)
+                    .background(Color.appBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.hairline, lineWidth: 1))
+                }
             }
         default:
             EmptyView()

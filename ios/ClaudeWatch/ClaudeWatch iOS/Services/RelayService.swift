@@ -565,6 +565,14 @@ final class RelayService: ObservableObject {
 
         // De-dupe: the bridge re-sends pending approvals on every SSE reconnect.
         if let idx = approvalQueue.firstIndex(where: { $0.dedupeKey == approval.dedupeKey }) {
+            // Preserve in-flight/failed interaction state — a reconnect resend
+            // must NOT reset .submitting back to .pending (which would re-enable
+            // the buttons mid-POST and allow a double answer) or wipe a 409
+            // re-verify (.failed + refreshed hash/screen). Only refresh a card
+            // that is still plain .pending.
+            if approvalQueue[idx].status == .submitting || approvalQueue[idx].status == .failed {
+                return
+            }
             approvalQueue[idx] = approval               // refresh in place
             pendingApproval = approvalQueue.first
             if let sid = sessionId, let sIdx = sessions.firstIndex(where: { $0.id == sid }) {
@@ -641,12 +649,39 @@ final class RelayService: ObservableObject {
                 clearPendingApproval(for: approval)
             } catch {
                 // Failure — keep the card, surface the error, allow retry.
-                setStatus(.failed, for: approval, error: friendlyError(error))
+                if case BridgeClient.BridgeError.screenChanged = error, let tid {
+                    // 409: the live screen moved since the user saw it. Pull the
+                    // CURRENT screen + hash so the card re-shows it and a retry
+                    // sends the fresh hash (otherwise it would 409 forever).
+                    await reverifyApproval(approval, terminalId: tid)
+                } else {
+                    setStatus(.failed, for: approval, error: friendlyError(error))
+                }
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
                 let line = TerminalLine(text: "✗ 승인 전송 실패 — 다시 시도하세요", type: .error)
                 terminalBuffer.append(line)
                 recentTerminalLines = terminalBuffer.getLast(15)
             }
+        }
+    }
+
+    /// After a 409, fetch the live screen + hash for the approval's terminal and
+    /// fold them into the card so the user re-confirms before retrying with the
+    /// fresh hash (the bridge requires the answer hash == current screen hash).
+    private func reverifyApproval(_ approval: ApprovalRequest, terminalId: String) async {
+        let fresh = await cmuxScreen(terminalId)
+        if let i = approvalQueue.firstIndex(where: { $0.dedupeKey == approval.dedupeKey }) {
+            approvalQueue[i].status = .failed
+            approvalQueue[i].lastError = "화면이 바뀌었습니다 — 아래 최신 화면을 확인하고 다시 누르세요"
+            approvalQueue[i].expectedScreenHash = fresh?.hash
+            approvalQueue[i].latestScreen = fresh?.text
+        }
+        pendingApproval = approvalQueue.first
+        for i in sessions.indices where sessions[i].pendingApproval?.permissionId == approval.permissionId {
+            sessions[i].pendingApproval?.status = .failed
+            sessions[i].pendingApproval?.lastError = "화면이 바뀌었습니다 — 다시 확인 후 누르세요"
+            sessions[i].pendingApproval?.expectedScreenHash = fresh?.hash
+            sessions[i].pendingApproval?.latestScreen = fresh?.text
         }
     }
 

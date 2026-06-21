@@ -253,7 +253,8 @@ function parsePerm(d){
   } else if(ti.file_path){ desc=name+' '+basename(ti.file_path); opts=[{label:'Yes'},{label:'Yes, allow all'},{label:'No'}]; }
   else if(ti.command){ desc='Run: '+String(ti.command).slice(0,120); opts=[{label:'Yes'},{label:'Yes, allow all'},{label:'No'}]; }
   else { opts=[{label:'Yes'},{label:'No'}]; }
-  return { permissionId:d.permissionId, question, desc, opts };
+  return { permissionId:d.permissionId, question, desc, opts,
+           terminalId:d.terminalId||null, expectedScreenHash:d.screenHash||null };
 }
 function onPerm(d){
   const s = sess(d.sessionId); if(!s) return;
@@ -275,15 +276,25 @@ async function respond(p, opt, i){
   else if(/allow all|don't ask/i.test(opt.label)){ body={ permissionId:p.permissionId, decision:{behavior:'allow'}, allowAll:true }; }
   else if(last){ body={ permissionId:p.permissionId, decision:{behavior:'deny'} }; }
   else { body={ permissionId:p.permissionId, decision:{behavior:'allow'} }; }
+  // Pin the codex terminal + screen hash so the bridge can fail-closed (409) if
+  // the screen changed or the terminal can't be uniquely identified.
+  if(p.terminalId) body.terminalId = p.terminalId;
+  if(p.expectedScreenHash) body.expectedScreenHash = p.expectedScreenHash;
   const s = sessions.get(activeId);
   if(p.submitting) return;        // already in flight
   p.submitting = true; p.error = null; render();
   try{
     const r = await post('/command', body);
     if(!r.ok){
-      // 409 = screen changed; other = bridge refused. Keep the card, allow retry.
       p.submitting = false;
-      p.error = (r.status===409) ? '화면이 바뀌었습니다 — 다시 시도하세요' : ('승인 전송 실패 ('+r.status+')');
+      if(r.status===409){
+        // Screen changed — pull the fresh hash so a retry can re-confirm.
+        const j = await r.json().catch(()=>null);
+        if(j && j.currentHash) p.expectedScreenHash = j.currentHash;
+        p.error = '화면이 바뀌었습니다 — 다시 확인 후 누르세요';
+      } else {
+        p.error = '승인 전송 실패 ('+r.status+')';
+      }
       render();
       return;
     }
