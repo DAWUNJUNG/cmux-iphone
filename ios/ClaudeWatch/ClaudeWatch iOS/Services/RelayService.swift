@@ -27,7 +27,20 @@ final class RelayService: ObservableObject {
     @Published private(set) var recentTerminalLines: [TerminalLine] = []
     @Published private(set) var connectionState: ConnectionState = .disconnected
     @Published private(set) var lastConnected: Date?
-    @Published private(set) var isThinking: Bool = false
+
+    /// True if ANY session is thinking. Per-session state lives on AgentSession
+    /// .thinking; this derived flag exists only for non-session-scoped readers.
+    var isThinking: Bool { sessions.contains { $0.thinking } }
+
+    /// Set a session's "thinking" flag. With no sessionId, turning OFF clears all
+    /// sessions (a global stop); turning ON requires a sessionId (no-op otherwise).
+    func setThinking(_ on: Bool, sessionId: String?) {
+        if let sid = sessionId, let idx = sessions.firstIndex(where: { $0.id == sid }) {
+            sessions[idx].thinking = on
+        } else if !on {
+            for i in sessions.indices { sessions[i].thinking = false }
+        }
+    }
 
     // Multi-session
     @Published private(set) var sessions: [AgentSession] = []
@@ -266,6 +279,18 @@ final class RelayService: ObservableObject {
         Task { try? await bridgeClient.sendCommand(text: text, terminalId: terminalId) }
     }
 
+    /// Transactional cmux prompt send — returns false on failure so the caller
+    /// keeps the text in the input for retry.
+    @discardableResult
+    func sendCmuxPrompt(terminalId: String, text: String) async -> Bool {
+        do {
+            try await bridgeClient.sendCommand(text: text, terminalId: terminalId)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Awaitable cmux text send with explicit submit control — used by the codex
     /// model/effort driver, which types a slash command (submit) then picks rows
     /// with single digits (no submit). Unguarded by design (it drives the screen).
@@ -349,7 +374,6 @@ final class RelayService: ObservableObject {
         pendingApproval = nil
         approvalQueue = []
         resolvedPermissionIds = []
-        isThinking = false
         elapsedSeconds = 0
         cmuxAvailable = false
         cmuxWorkspaces = []
@@ -628,7 +652,10 @@ final class RelayService: ObservableObject {
         if !permissionId.isEmpty, resolvedPermissionIds.contains(permissionId) { return }
 
         let isLast = index == approval.options.count - 1
-        UIImpactFeedbackGenerator(style: isLast ? .heavy : .medium).impactOccurred()
+        // Heavy "deny" haptic only for a standard permission's last (deny) option —
+        // an AskUserQuestion's last option is a normal choice, not a denial.
+        let isDeny = approval.question == nil && isLast
+        UIImpactFeedbackGenerator(style: isDeny ? .heavy : .medium).impactOccurred()
         setStatus(.submitting, for: approval)
 
         let tid = approval.terminalId
@@ -755,7 +782,11 @@ final class RelayService: ObservableObject {
     // MARK: - Send command
 
     /// Sends a text command to the bridge (iOS equivalent of watchOS voice input).
-    func sendCommand(text: String, sessionId: String? = nil) {
+    /// Send a prompt to a hook session's agent. Transactional: returns false on
+    /// failure (the caller keeps the text in the input for retry) and only marks
+    /// the session "thinking" once the bridge accepted it.
+    @discardableResult
+    func sendCommand(text: String, sessionId: String? = nil) async -> Bool {
         let sid = sessionId ?? sessions.first(where: { $0.activity == .running })?.id
 
         // Show in terminal
@@ -764,12 +795,19 @@ final class RelayService: ObservableObject {
         appendToSession(cmdLine, sessionId: sid)
         recentTerminalLines = terminalBuffer.getLast(15)
 
-        isThinking = true
-
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
-        Task {
-            try? await bridgeClient.sendCommand(text: text + "\n", sessionId: sid)
+        do {
+            try await bridgeClient.sendCommand(text: text + "\n", sessionId: sid)
+            setThinking(true, sessionId: sid)
+            return true
+        } catch {
+            let errLine = TerminalLine(text: "✗ 전송 실패 — 다시 시도하세요", type: .error, sessionId: sid)
+            terminalBuffer.append(errLine)
+            appendToSession(errLine, sessionId: sid)
+            recentTerminalLines = terminalBuffer.getLast(15)
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return false
         }
     }
 
@@ -782,7 +820,7 @@ final class RelayService: ObservableObject {
         }
         terminalBuffer.clear()
         recentTerminalLines = []
-        isThinking = false
+        setThinking(false, sessionId: sessionId)
     }
 
     // MARK: - Helpers (approval)
@@ -851,7 +889,7 @@ final class RelayService: ObservableObject {
                 }
             }
         case "ended":
-            isThinking = false
+            setThinking(false, sessionId: sessionId)
             stopElapsedTimer()
             notificationService.postTaskComplete()
             if let sid = sessionId, let idx = sessions.firstIndex(where: { $0.id == sid }) {
@@ -954,14 +992,15 @@ final class RelayService: ObservableObject {
         }
 
         // Mark as thinking (cursor will be shown in the view)
-        isThinking = true
+        setThinking(true, sessionId: sessionId)
 
         recentTerminalLines = terminalBuffer.getLast(10)
         scheduleBatchSend()
     }
 
     private func handleTaskComplete(_ data: String) {
-        isThinking = false
+        let sid = parseJSON(data)?["sessionId"] as? String
+        setThinking(false, sessionId: sid)
         let line = TerminalLine(text: "Task completed", type: .system)
         terminalBuffer.append(line)
         recentTerminalLines = terminalBuffer.getLast(15)
@@ -978,9 +1017,9 @@ final class RelayService: ObservableObject {
     }
 
     private func handleStop(_ data: String) {
-        isThinking = false
         let json = parseJSON(data)
         let sessionId = json?["sessionId"] as? String
+        setThinking(false, sessionId: sessionId)
 
         // Render Claude's final answer. The bridge reads it from the transcript
         // on Stop and forwards it as `assistantText` — this is the only place the

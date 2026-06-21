@@ -15,6 +15,7 @@ struct AgentSession: Identifiable, Codable, Equatable {
     // Client-side only — not decoded from bridge JSON
     var terminalLines: [TerminalLine] = []
     var pendingApproval: ApprovalRequest?
+    var thinking: Bool = false          // per-session "생각 중" indicator
 
     enum CodingKeys: String, CodingKey {
         case id, agent, cwd, folderName, activity
@@ -54,6 +55,7 @@ struct AgentSession: Identifiable, Codable, Equatable {
         lhs.id == rhs.id
             && lhs.agent == rhs.agent
             && lhs.activity == rhs.activity
+            && lhs.thinking == rhs.thinking
             && lhs.terminalLines.count == rhs.terminalLines.count
     }
 }

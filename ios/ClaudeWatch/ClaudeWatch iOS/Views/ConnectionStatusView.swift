@@ -665,6 +665,7 @@ private struct CmuxTerminalView: View {
 
     @State private var screen: String = ""
     @State private var promptText: String = ""
+    @State private var sending = false
     @State private var showModelSheet = false
     @State private var codexDriving = false
     @State private var codexStatus = ""
@@ -889,27 +890,34 @@ private struct CmuxTerminalView: View {
                 .focused($inputFocused)
 
             Button { send() } label: {
-                Image(systemName: "arrow.up")
+                Image(systemName: sending ? "ellipsis" : "arrow.up")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
-                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending
                                 ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
         }
     }
 
     // Send the prompt to the terminal (the screen is expected to keep changing).
+    // Transactional: clear the input only after the bridge accepts it.
     private func send() {
         let t = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        relayService.sendCmux(terminalId: terminalId, text: t)
-        promptText = ""
+        guard !t.isEmpty, !sending else { return }
+        sending = true
         inputFocused = false
         Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            let ok = await relayService.sendCmuxPrompt(terminalId: terminalId, text: t)
+            sending = false
+            if ok {
+                promptText = ""
+            } else {
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
             await refresh()
         }
     }
@@ -1287,6 +1295,7 @@ private struct SessionDetailView: View {
     @State private var cursorVisible = true
     @State private var promptText = ""
     @State private var messageText = ""
+    @State private var isSending = false
     @FocusState private var isPromptFocused: Bool
     @FocusState private var isMessageFocused: Bool
     private let cursorTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
@@ -1376,7 +1385,7 @@ private struct SessionDetailView: View {
                             .textSelection(.enabled)
                             .id(line.id)
                     }
-                    if relayService.isThinking {
+                    if session.thinking {
                         HStack(spacing: 0) {
                             Text("✳ 생각 중… ")
                             Text(cursorVisible ? "\u{258C}" : " ")
@@ -1391,7 +1400,7 @@ private struct SessionDetailView: View {
             }
             .onChange(of: session.terminalLines.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.15)) {
-                    if relayService.isThinking {
+                    if session.thinking {
                         proxy.scrollTo("thinking-cursor", anchor: .bottom)
                     } else if let last = session.terminalLines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
@@ -1454,7 +1463,7 @@ private struct SessionDetailView: View {
         let placeholder = session.agent == .codex
             ? "Codex에게 메시지 보내기..."
             : "Claude에게 메시지 보내기..."
-        let disabled = messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let disabled = messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending
 
         return HStack(spacing: 10) {
             TextField(placeholder, text: $messageText)
@@ -1464,6 +1473,7 @@ private struct SessionDetailView: View {
                 .focused($isMessageFocused)
                 .submitLabel(.send)
                 .onSubmit { sendMessage() }
+                .disabled(isSending)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(Color.surfaceElevated)
@@ -1474,7 +1484,7 @@ private struct SessionDetailView: View {
                 )
 
             Button { sendMessage() } label: {
-                Image(systemName: "arrow.up")
+                Image(systemName: isSending ? "ellipsis" : "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 36, height: 36)
@@ -1490,10 +1500,16 @@ private struct SessionDetailView: View {
 
     private func sendMessage() {
         let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        relayService.sendCommand(text: text, sessionId: sessionId)
-        messageText = ""
+        guard !text.isEmpty, !isSending else { return }
+        isSending = true
         isMessageFocused = false
+        Task {
+            let ok = await relayService.sendCommand(text: text, sessionId: sessionId)
+            isSending = false
+            if ok {
+                messageText = ""          // clear only on success; keep text to retry on failure
+            }
+        }
     }
 
     // MARK: Approval — SCREEN 06
@@ -1523,7 +1539,7 @@ private struct SessionDetailView: View {
             }
 
             ForEach(Array(approval.options.enumerated()), id: \.element.id) { index, option in
-                let color = colorForOption(index, total: approval.options.count)
+                let color = colorForOption(index, total: approval.options.count, isQuestion: approval.question != nil)
                 Button {
                     relayService.respond(to: approval, optionLabel: option.label, index: index)
                     promptText = ""
@@ -1617,7 +1633,9 @@ private struct SessionDetailView: View {
         isPromptFocused = false
     }
 
-    private func colorForOption(_ index: Int, total: Int) -> Color {
+    private func colorForOption(_ index: Int, total: Int, isQuestion: Bool = false) -> Color {
+        // AskUserQuestion options are neutral choices — not allow/deny.
+        if isQuestion { return Color.claudeOrange }
         if total <= 1 { return Color.statusGreen }
         if index == 0 { return Color.statusGreen }
         if index == total - 1 { return Color.denyRed }

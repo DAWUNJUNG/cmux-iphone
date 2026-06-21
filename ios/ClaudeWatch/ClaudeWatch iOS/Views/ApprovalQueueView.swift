@@ -217,6 +217,9 @@ struct ApprovalCard: View {
     }
 
     private func colorForOption(_ index: Int, total: Int) -> Color {
+        // AskUserQuestion options are neutral choices — don't paint the last one
+        // red (it isn't a "deny"). Only standard permission prompts get green/red.
+        if approval.question != nil { return Color.claudeOrange }
         if total <= 1 { return Color.statusGreen }
         if index == 0 { return Color.statusGreen }
         if index == total - 1 { return Color.denyRed }
