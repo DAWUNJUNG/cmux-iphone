@@ -666,20 +666,34 @@ private struct CmuxTerminalView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 12)
             }
+
+            if showModelSheet {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { showModelSheet = false } }
+                    .transition(.opacity)
+
+                ModelEffortPanel(
+                    onSend: { cmd in
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { showModelSheet = false }
+                        relayService.sendCmux(terminalId: terminalId, text: cmd)
+                        Task { try? await Task.sleep(nanoseconds: 600_000_000); await refresh() }
+                    },
+                    onDismiss: { withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { showModelSheet = false } }
+                )
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
         }
+        .animation(.spring(response: 0.25, dampingFraction: 0.85), value: showModelSheet)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showModelSheet = true } label: {
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { showModelSheet = true }
+                } label: {
                     Image(systemName: "cpu").foregroundStyle(Color.claudeOrange)
                 }
-            }
-        }
-        .sheet(isPresented: $showModelSheet) {
-            ModelEffortSheet { cmd in
-                relayService.sendCmux(terminalId: terminalId, text: cmd)
-                Task { try? await Task.sleep(nanoseconds: 600_000_000); await refresh() }
             }
         }
         .task(id: terminalId) { await refresh() }
@@ -778,50 +792,54 @@ private struct CmuxTerminalView: View {
     }
 }
 
-/// Claude model + effort picker. Sends `/model <name>` / `/effort <level>` to
-/// the active terminal (Claude reads these slash commands).
-private struct ModelEffortSheet: View {
+/// Claude model + effort picker — centered overlay modal.
+/// Sends `/model <name>` / `/effort <level>` to the active cmux terminal.
+private struct ModelEffortPanel: View {
     let onSend: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onDismiss: () -> Void
 
     private let models: [(String, String)] = [
         ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku"),
     ]
     private let efforts: [String] = ["low", "medium", "high", "xhigh", "max", "ultracode"]
-    private let cols = [GridItem(.adaptive(minimum: 92), spacing: 8)]
+    private let cols = [GridItem(.adaptive(minimum: 88), spacing: 8)]
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBackground.ignoresSafeArea()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        section("모델") {
-                            ForEach(models, id: \.1) { (label, name) in
-                                chip(label, color: .claudeOrange) { onSend("/model \(name)"); dismiss() }
-                            }
-                        }
-                        section("Effort") {
-                            ForEach(efforts, id: \.self) { lvl in
-                                chip(lvl, color: .claudeAmber) { onSend("/effort \(lvl)"); dismiss() }
-                            }
-                        }
-                        Text("선택하면 해당 터미널의 Claude에 슬래시 명령으로 전송됩니다.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.subtleText)
-                    }
-                    .padding(16)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Claude 설정")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(Color.textPrimary)
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.subtleText)
+                }
+                .buttonStyle(.plain)
+            }
+
+            section("모델") {
+                ForEach(models, id: \.1) { (label, name) in
+                    chip(label, color: .claudeOrange) { onSend("/model \(name)") }
                 }
             }
-            .navigationTitle("Claude 설정")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("닫기") { dismiss() }.foregroundStyle(Color.claudeOrange)
+            section("Effort") {
+                ForEach(efforts, id: \.self) { lvl in
+                    chip(lvl, color: .claudeAmber) { onSend("/effort \(lvl)") }
                 }
             }
+
+            Text("선택하면 해당 터미널의 Claude에 슬래시 명령으로 전송됩니다.")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.subtleText)
         }
-        .presentationDetents([.medium])
+        .padding(20)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.hairline, lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 24, y: 6)
+        .padding(.horizontal, 24)
     }
 
     @ViewBuilder
@@ -829,7 +847,7 @@ private struct ModelEffortSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.textPrimary)
+                .foregroundStyle(Color.subtleText)
             LazyVGrid(columns: cols, alignment: .leading, spacing: 8) { content() }
         }
     }
