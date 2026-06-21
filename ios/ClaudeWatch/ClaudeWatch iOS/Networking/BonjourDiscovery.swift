@@ -76,7 +76,7 @@ final class BonjourDiscovery: ObservableObject {
 
         var lastError: Error?
         for port in UInt16(7860)...UInt16(7869) {
-            guard let url = URL(string: "http://\(host):\(port)/status") else { continue }
+            guard let url = URL(string: "http://\(host):\(port)/health") else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 8
             do {
@@ -115,7 +115,7 @@ final class BonjourDiscovery: ObservableObject {
     /// Tries to connect to localhost:7860-7869 directly.
     private func localhostFallback() async throws -> DiscoveredService {
         for port in UInt16(7860)...UInt16(7869) {
-            let url = URL(string: "http://127.0.0.1:\(port)/status")!
+            let url = URL(string: "http://127.0.0.1:\(port)/health")!
             var request = URLRequest(url: url)
             request.timeoutInterval = 2
             do {

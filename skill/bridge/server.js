@@ -1762,7 +1762,21 @@ async function handleSupervise(req, res) {
   return jsonResponse(res, 200, { supervise: superviseMode });
 }
 
-function handleStatus(_req, res) {
+// Public liveness probe — NO auth, NO sensitive data (no session list/cwd).
+function handleHealth(_req, res) {
+  return jsonResponse(res, 200, {
+    ok: true,
+    state: bridgeState,
+    bridgeId: BRIDGE_ID,
+    cmuxAvailable: cmux.cmuxAvailable(),
+  });
+}
+
+function handleStatus(req, res) {
+  // /status exposes session cwds + counts — require auth (was public).
+  if (!requireAuth(req)) {
+    return jsonResponse(res, 401, { error: "Unauthorized" });
+  }
   const mostRecentRunningSession = findMostRecentRunningSession();
   return jsonResponse(res, 200, {
     bridgeId: BRIDGE_ID,
@@ -1894,6 +1908,7 @@ const routes = {
   "POST /hooks/session-start": handleHookSessionStart,
   "POST /hooks/pre-tool-use": handleHookPreToolUse,
   "POST /supervise": handleSupervise,
+  "GET /health": handleHealth,
   "GET /status": handleStatus,
   "GET /cmux/tree": handleCmuxTree,
   "GET /cmux/screen": handleCmuxScreen,

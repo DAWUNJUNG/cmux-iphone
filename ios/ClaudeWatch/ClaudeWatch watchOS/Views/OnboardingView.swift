@@ -113,7 +113,7 @@ struct OnboardingView: View {
 
         Task {
             for port in 7860...7869 {
-                let url = URL(string: "http://\(ip):\(port)/status")!
+                let url = URL(string: "http://\(ip):\(port)/health")!
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 3
                 do {

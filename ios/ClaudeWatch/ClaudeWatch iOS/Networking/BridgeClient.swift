@@ -287,11 +287,13 @@ final class BridgeClient {
         try await authenticatedPostRaw(path: "supervise", body: ["on": on])
     }
 
-    /// Fetches the current bridge status.
+    /// Fetches the current bridge status. /status now requires auth (it exposes
+    /// session cwds), so send the bearer token.
     func fetchStatus() async throws -> BridgeStatus {
         guard let baseURL else { throw BridgeError.networkError }
         let url = baseURL.appendingPathComponent("status")
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (data, _) = try await performRequest(request)
         return try JSONDecoder().decode(BridgeStatus.self, from: data)
     }
