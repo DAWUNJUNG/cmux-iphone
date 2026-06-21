@@ -1,10 +1,16 @@
 #!/bin/bash
 # install-launchd.sh — run the Agent Watch bridge 24/7 as a LaunchAgent.
 #
-# Why a LaunchAgent (not a LaunchDaemon): the bridge calls `cmux`, which is a
-# GUI app bound to your logged-in session. A LaunchAgent runs in that user
-# session. For the bridge to come back after a REBOOT with nobody touching the
-# Mac, enable automatic login (System Settings > Users & Groups > Auto-login).
+# SCOPE: this LaunchAgent serves the CORE bridge only — hook receiver, phone/SSE
+# API, pairing, and Codex log monitoring. It does NOT drive the cmux live mirror:
+# empirically, a launchd-spawned process cannot complete a cmux control-socket
+# RPC (it fails at setsockopt; the socket is gated by the GUI session, not by the
+# password). The cmux mirror requires the in-cmux supervisor (run-in-cmux.sh),
+# which `agent-watch setup` registers as a cmux workspace when cmux is present.
+#
+# LaunchAgent (not LaunchDaemon) so it runs in your logged-in user session. For
+# it to come back after a REBOOT untouched, enable automatic login
+# (System Settings > Users & Groups > Auto-login).
 #
 # Usage:
 #   ./install-launchd.sh [PORT]      # install + start (default port 7860)
@@ -34,7 +40,7 @@ NODE_BIN="$(command -v node || true)"
 
 CMUX_BIN="$(command -v cmux || true)"
 if [ -z "$CMUX_BIN" ]; then
-  for c in "/Applications/cmux.app/Contents/Resources/bin/cmux" "/Applications/cmux 2.app/Contents/Resources/bin/cmux"; do
+  for c in "/Applications/cmux.app/Contents/Resources/bin/cmux"; do
     [ -x "$c" ] && CMUX_BIN="$c" && break
   done
 fi

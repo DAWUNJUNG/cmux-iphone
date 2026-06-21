@@ -12,7 +12,7 @@
 
 ```bash
 cd claude-watch/skill/bridge
-npm install
+npm ci   # 커밋된 lockfile로 재현 설치 (lockfile 없으면 npm install)
 ./setup-hooks.sh 7860                 # Claude 전역 훅 등록 (1회)
 sudo pmset -a sleep 0 && sudo pmset -a disablesleep 1   # 잠들면 도달 불가
 ./install-launchd.sh 7860             # 재부팅에도 살아남는 LaunchAgent로 기동

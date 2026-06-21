@@ -21,5 +21,5 @@ Run `/claude-watch` to start the bridge.
 Enter the pairing code in the Agent Watch iPhone app.
 
 ## Setup
-The bridge requires Node.js 18+ and the `node-pty` package.
-Run the setup script: `cd skill/bridge && npm install`
+The bridge requires Node.js 18+ (its only dependency is `bonjour-service`).
+Run the setup script: `cd skill/bridge && npm ci` (or `npm install` if no lockfile)

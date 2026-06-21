@@ -36,7 +36,6 @@ function findCmuxBin() {
   }
   const candidates = [
     "/Applications/cmux.app/Contents/Resources/bin/cmux",
-    "/Applications/cmux 2.app/Contents/Resources/bin/cmux",
   ];
   for (const c of candidates) {
     try { fs.accessSync(c, fs.constants.X_OK); return c; } catch { /* continue */ }

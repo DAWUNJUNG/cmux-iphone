@@ -77,7 +77,7 @@ A SwiftUI watchOS app that:
 
 ```bash
 cd skill/bridge
-npm install
+npm ci   # reproducible from the committed lockfile (use `npm install` if absent)
 ```
 
 ### 2. Install Claude Code hooks
@@ -246,7 +246,8 @@ The `setup-hooks.sh` script installs these HTTP hooks globally in `~/.claude/set
 ### Unpairing
 
 - **iPhone:** Settings > Forget Mac
-- **Watch:** Restart the app (credentials clear when bridge restarts)
+- **Watch:** Settings > Forget Mac (the session token is persisted, so it
+  survives a bridge restart — you must explicitly forget the Mac to clear it)
 
 ## Requirements
 
@@ -272,7 +273,7 @@ The `setup-hooks.sh` script installs these HTTP hooks globally in `~/.claude/set
 - Deploy via paired iPhone destination if direct watch deployment fails
 
 ### iPhone shows "Connection failed"
-- Check that the bridge is running (`curl http://127.0.0.1:7860/status`)
+- Check that the bridge is running (`curl http://127.0.0.1:7860/health`) — `/status` now requires auth
 - The bridge must be on the same LAN as the iPhone
 
 ### Permission prompts don't appear on watch

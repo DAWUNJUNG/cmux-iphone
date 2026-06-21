@@ -4,13 +4,13 @@
 # agent runs in a different audit session that cmux's socket rejects, so the
 # cmux-mirror feature requires the bridge to live in-session.
 #
-# Launch with:  cmux workspace create --name "Agent Bridge" --command "/Users/limseungwon/claude-watch/skill/bridge/run-in-cmux.sh"
+# Launch with:  cmux workspace create --name "Agent Bridge" --command "<path>/run-in-cmux.sh"
+# (agent-watch setup registers this automatically when cmux is present.)
 # Restart loop keeps the bridge up across crashes; cmux session-restore brings
 # this workspace back after a cmux restart.
 
 cd "$(dirname "$0")" || exit 1
-NODE="/Users/limseungwon/.local/bin/node"
-[ -x "$NODE" ] || NODE="$(command -v node)"
+NODE="$(command -v node || echo "$HOME/.local/bin/node")"
 
 while true; do
   echo "[run-in-cmux] starting bridge ($(date '+%H:%M:%S'))"

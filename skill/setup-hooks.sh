@@ -39,29 +39,38 @@ if [ "$1" = "--remove" ]; then
     exit 0
   fi
 
-  # Remove the hooks we added (identified by claude-watch URLs)
+  # Remove ONLY Agent Watch's own hooks — matched by our exact loopback origin
+  # + route set, so we never delete another tool's localhost hooks.
   python3 -c "
 import json, sys
 
 with open('$SETTINGS', 'r') as f:
     settings = json.load(f)
 
+HOOK_URL = '${HOOK_URL}'
+AW_ROUTES = ('tool-output', 'pre-tool-use', 'session-start', 'session-end', 'permission', 'stop', 'error')
+AW_URLS = {f'{HOOK_URL}/hooks/{r}' for r in AW_ROUTES}
+
 hooks = settings.get('hooks', {})
 changed = False
 for event in list(hooks.keys()):
-    filtered = [
-        entry for entry in hooks[event]
-        if not any(
-            h.get('url', '').startswith('http://127.0.0.1:') and '/hooks/' in h.get('url', '')
-            for h in entry.get('hooks', [])
-        )
-    ]
-    if len(filtered) != len(hooks[event]):
-        changed = True
-        if filtered:
-            hooks[event] = filtered
-        else:
-            del hooks[event]
+    new_entries = []
+    for entry in hooks[event]:
+        inner = entry.get('hooks')
+        if not isinstance(inner, list):
+            new_entries.append(entry)          # not a hook-list entry — leave untouched
+            continue
+        kept = [h for h in inner if h.get('url', '') not in AW_URLS]
+        if len(kept) != len(inner):
+            changed = True                     # we removed at least one AW hook
+        if kept:
+            entry['hooks'] = kept              # keep the entry + any non-AW hooks beside ours
+            new_entries.append(entry)
+        # else: entry contained ONLY AW hooks → drop the now-empty entry
+    if new_entries:
+        hooks[event] = new_entries
+    else:
+        del hooks[event]
 
 if changed:
     if not hooks:
@@ -94,6 +103,12 @@ fi
 mkdir -p "$(dirname "$SETTINGS")"
 if [ ! -f "$SETTINGS" ]; then
   echo '{}' > "$SETTINGS"
+else
+  # Back up before we modify it (the hook headers embed the secret). Keep the
+  # backup private — it contains the same secret as the live file.
+  BACKUP="${SETTINGS}.agentwatch.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$SETTINGS" "$BACKUP" && chmod 600 "$BACKUP"
+  echo "  Backed up existing settings → ${BACKUP}"
 fi
 
 # Merge hooks into existing settings using Python (preserves existing config)
@@ -180,19 +195,30 @@ with open('$SETTINGS', 'r') as f:
 
 existing_hooks = settings.get('hooks', {})
 
+# Agent Watch's own hook URLs (exact) — used to replace our prior install without
+# touching another tool's localhost hooks. BRIDGE is our loopback hook origin.
+AW_ROUTES = ('tool-output', 'pre-tool-use', 'session-start', 'session-end', 'permission', 'stop', 'error')
+AW_URLS = {f'{BRIDGE}/hooks/{r}' for r in AW_ROUTES}
+
 # Merge: add our hooks without removing user's existing hooks
 for event, entries in new_hooks.items():
     if event not in existing_hooks:
         existing_hooks[event] = []
 
-    # Remove any old claude-watch hooks for this event
-    existing_hooks[event] = [
-        entry for entry in existing_hooks[event]
-        if not any(
-            h.get('url', '').startswith('http://127.0.0.1:') and '/hooks/' in h.get('url', '')
-            for h in entry.get('hooks', [])
-        )
-    ]
+    # Remove ONLY our own prior hook objects (not whole mixed entries): strip AW
+    # hooks from each entry's nested list, keep the entry if other hooks remain.
+    deduped = []
+    for entry in existing_hooks[event]:
+        inner = entry.get('hooks')
+        if not isinstance(inner, list):
+            deduped.append(entry)
+            continue
+        kept = [h for h in inner if h.get('url', '') not in AW_URLS]
+        if kept:
+            entry['hooks'] = kept
+            deduped.append(entry)
+        # else: entry was only our prior hooks → drop the empty shell
+    existing_hooks[event] = deduped
 
     # Add our new hooks
     existing_hooks[event].extend(entries)
@@ -208,6 +234,9 @@ print('Events hooked:')
 for event in new_hooks:
     print(f'  • {event}')
 "
+
+# settings.json now embeds the hook secret in the hook headers — keep it private.
+chmod 600 "$SETTINGS" 2>/dev/null || true
 
 echo ""
 

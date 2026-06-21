@@ -16,3 +16,12 @@
 *.swp
 *.swo
 *~
+
+# Secrets — generated at runtime outside the repo; never commit (defense in depth)
+**/session-token
+**/hook-secret
+**/cmux-password
+*.plist.local
+
+# Logs
+*.log
