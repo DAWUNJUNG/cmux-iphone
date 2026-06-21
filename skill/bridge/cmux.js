@@ -18,9 +18,15 @@
 // shell-injected. Every function is best-effort: on any failure it throws and
 // the caller falls back to the original detached behaviour.
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { promisify } from "node:util";
+
+// Async exec so cmux/lsof calls never block Node's event loop (each cmux call
+// can take up to ~8s; sync calls would stall SSE + every other request).
+// execFileSync is kept only for one-time module-load discovery (findCmuxBin).
+const execFileP = promisify(execFile);
 
 function findCmuxBin() {
   const envBin = process.env.CMUX_BIN;
@@ -56,22 +62,23 @@ function withAuth(args) {
   return CMUX_PASSWORD ? ["--password", CMUX_PASSWORD, ...args] : args;
 }
 
-function cmux(args) {
+async function cmux(args) {
   if (!CMUX_BIN) throw new Error("cmux binary not found");
-  return execFileSync(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
+  const { stdout } = await execFileP(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
+  return stdout;
 }
 
 export function cmuxAvailable() {
   return CMUX_BIN !== null;
 }
 
-function processCwd(pid) {
+async function processCwd(pid) {
   try {
-    const out = execFileSync(LSOF_BIN, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+    const { stdout } = await execFileP(LSOF_BIN, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
       encoding: "utf-8",
       timeout: 5000,
     });
-    const line = out.split("\n").find((l) => l.startsWith("n"));
+    const line = stdout.split("\n").find((l) => l.startsWith("n"));
     return line ? line.slice(1) : null;
   } catch {
     return null;
@@ -82,11 +89,11 @@ const norm = (p) => (typeof p === "string" ? p.replace(/\/+$/, "") : p);
 
 // Resolve a session's cwd + agent to a cmux surface ref (e.g. "surface:16").
 // Returns null if cmux is unavailable or no matching live surface is found.
-export function resolveSurface(cwd, agent = "claude") {
+export async function resolveSurface(cwd, agent = "claude") {
   if (!CMUX_BIN) return null;
   let tsv;
   try {
-    tsv = cmux(["top", "--all", "--processes", "--format", "tsv"]);
+    tsv = await cmux(["top", "--all", "--processes", "--format", "tsv"]);
   } catch {
     return null;
   }
@@ -106,7 +113,7 @@ export function resolveSurface(cwd, agent = "claude") {
     if (!parent.startsWith("surface:")) continue;
     if (seen.has(parent)) continue; // one entry per surface
     seen.add(parent);
-    candidates.push({ surface: parent, cwd: norm(processCwd(cols[4])) });
+    candidates.push({ surface: parent, cwd: norm(await processCwd(cols[4])) });
   }
 
   if (candidates.length === 0) return null;
@@ -132,40 +139,40 @@ export function resolveSurface(cwd, agent = "claude") {
 }
 
 // Type a prompt into a surface and submit it (text, then Enter).
-export function sendPrompt(surface, text) {
+export async function sendPrompt(surface, text) {
   const body = String(text).replace(/[\r\n]+$/, "");
-  cmux(["send", "--surface", surface, "--", body]);
-  cmux(["send-key", "--surface", surface, "enter"]);
+  await cmux(["send", "--surface", surface, "--", body]);
+  await cmux(["send-key", "--surface", surface, "enter"]);
 }
 
 // Send raw characters (no Enter) — used for single-key TUI answers like "y".
-export function sendChars(surface, chars) {
-  cmux(["send", "--surface", surface, "--", String(chars)]);
+export async function sendChars(surface, chars) {
+  await cmux(["send", "--surface", surface, "--", String(chars)]);
 }
 
 // Send a named key event — e.g. "enter", "escape", "ctrl+c".
-export function sendKey(surface, key) {
-  cmux(["send-key", "--surface", surface, key]);
+export async function sendKey(surface, key) {
+  await cmux(["send-key", "--surface", surface, key]);
 }
 
 // ---------------------------------------------------------------------------
 // Mobile mirror API (cmux rpc) — drives the phone's live cmux view.
 // ---------------------------------------------------------------------------
 
-function rpc(method, params) {
+async function rpc(method, params) {
   if (!CMUX_BIN) throw new Error("cmux binary not found");
   const args = ["rpc", method];
   if (params !== undefined) args.push(JSON.stringify(params));
-  const out = execFileSync(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
-  return out && out.trim() ? JSON.parse(out) : null;
+  const { stdout } = await execFileP(CMUX_BIN, withAuth(args), { encoding: "utf-8", timeout: 8000 });
+  return stdout && stdout.trim() ? JSON.parse(stdout) : null;
 }
 
 // Full workspace → terminal tree for the mobile mirror.
 // Returns the raw mobile.workspace.list payload (workspaces[].terminals[]).
-export function mobileWorkspaces() {
+export async function mobileWorkspaces() {
   if (!CMUX_BIN) return null;
   try {
-    return rpc("mobile.workspace.list");
+    return await rpc("mobile.workspace.list");
   } catch {
     return null;
   }
@@ -201,10 +208,10 @@ function spansToLines(spans) {
 
 // Plain-text screen of one terminal via mobile.terminal.replay, which (unlike
 // surface.read_text) honors the terminal_id. Combines scrollback + visible.
-export function readTerminalText(id) {
+export async function readTerminalText(id) {
   if (!CMUX_BIN || !id) return null;
   try {
-    const r = rpc("mobile.terminal.replay", { terminal_id: id });
+    const r = await rpc("mobile.terminal.replay", { terminal_id: id });
     const rg = r && r.render_grid;
     if (!rg) return null;
     const lines = spansToLines(rg.scrollback_spans).concat(spansToLines(rg.row_spans));
@@ -219,22 +226,22 @@ export function readTerminalText(id) {
 // changed between when the phone rendered an approval and when the response is
 // sent — so a "yes"/"no" can't land on a different prompt. Returns null if the
 // screen can't be read.
-export function screenHash(id) {
-  const t = readTerminalText(id);
+export async function screenHash(id) {
+  const t = await readTerminalText(id);
   if (t == null) return null;
   return crypto.createHash("sha256").update(t).digest("hex").slice(0, 16);
 }
 
 // Send text to a terminal by id, then submit with Enter (so prompts from the
 // phone land in the live agent surface exactly as if typed).
-export function sendInput(terminalId, text, submit = true) {
+export async function sendInput(terminalId, text, submit = true) {
   if (!CMUX_BIN || !terminalId) throw new Error("missing terminal id");
-  rpc("mobile.terminal.input", { terminal_id: terminalId, text: String(text) });
+  await rpc("mobile.terminal.input", { terminal_id: terminalId, text: String(text) });
   if (submit) {
     try {
-      cmux(["send-key", "--surface", terminalId, "enter"]);
+      await cmux(["send-key", "--surface", terminalId, "enter"]);
     } catch {
-      rpc("mobile.terminal.input", { terminal_id: terminalId, text: "\r" });
+      await rpc("mobile.terminal.input", { terminal_id: terminalId, text: "\r" });
     }
   }
 }

@@ -715,7 +715,7 @@ function clearCodexSyntheticPermissionForSession(sessionId, reason = "cleared") 
   return true;
 }
 
-function resolveCodexSyntheticPermission(permissionId, selectedOption, optionIndex) {
+async function resolveCodexSyntheticPermission(permissionId, selectedOption, optionIndex) {
   const synthetic = codexSyntheticPermissions.get(permissionId);
   if (!synthetic) return false;
 
@@ -729,16 +729,16 @@ function resolveCodexSyntheticPermission(permissionId, selectedOption, optionInd
     const proceed = idx === 0 || /^yes,?\s*proceed/i.test(String(selectedOption || ""));
     const dontAsk = synthetic.optionCount === 3
       && (idx === 1 || /^yes,?\s*don't ask again/i.test(String(selectedOption || "")));
-    const surface = cmux.resolveSurface(slot.cwd, "codex");
+    const surface = await cmux.resolveSurface(slot.cwd, "codex");
     if (surface) {
       try {
         if (proceed) {
-          cmux.sendChars(surface, "y");
+          await cmux.sendChars(surface, "y");
         } else if (dontAsk) {
-          cmux.sendChars(surface, "2");
-          cmux.sendKey(surface, "enter");
+          await cmux.sendChars(surface, "2");
+          await cmux.sendKey(surface, "enter");
         } else {
-          cmux.sendKey(surface, "escape"); // deny / cancel
+          await cmux.sendKey(surface, "escape"); // deny / cancel
         }
         clearCodexSyntheticPermissionForSession(synthetic.sessionId, "resolved");
         log("info", `cmux codex approval ${permissionId} -> ${surface} (${slot.cwd})`);
@@ -1119,21 +1119,21 @@ async function handleCommand(req, res) {
     // so a "yes"/"no" can't land on a different prompt. Normal prompts omit the
     // hash and are unaffected. (See the A-safely conditions for cmux approvals.)
     if (body.expectedScreenHash) {
-      const currentHash = cmux.screenHash(body.terminalId);
+      const currentHash = await cmux.screenHash(body.terminalId);
       if (currentHash !== body.expectedScreenHash) {
         return jsonResponse(res, 409, {
           error: "screen-changed",
           currentHash,
-          currentScreen: cmux.readTerminalText(body.terminalId) || "",
+          currentScreen: (await cmux.readTerminalText(body.terminalId)) || "",
         });
       }
     }
 
     try {
-      cmux.sendInput(body.terminalId, promptText, body.submit !== false);
+      await cmux.sendInput(body.terminalId, promptText, body.submit !== false);
       log("info", `cmux mobile input -> terminal ${String(body.terminalId).slice(0, 8)}: "${promptText.slice(0, 80)}"`);
       // Re-read so the caller can confirm the approval prompt was consumed.
-      const afterHash = body.expectedScreenHash ? cmux.screenHash(body.terminalId) : undefined;
+      const afterHash = body.expectedScreenHash ? await cmux.screenHash(body.terminalId) : undefined;
       return jsonResponse(res, 200, { ok: true, terminalId: body.terminalId, via: "cmux-mobile", afterHash });
     } catch (err) {
       return jsonResponse(res, 500, { error: `cmux input failed: ${err.message}` });
@@ -1182,7 +1182,7 @@ async function handleCommand(req, res) {
       }
     }
 
-    const resolvedSynthetic = resolveCodexSyntheticPermission(permissionId, selectedOption, optionIndex);
+    const resolvedSynthetic = await resolveCodexSyntheticPermission(permissionId, selectedOption, optionIndex);
     if (resolvedSynthetic) {
       return jsonResponse(res, 200, { ok: true });
     }
@@ -1209,10 +1209,10 @@ async function handleCommand(req, res) {
         // session, so the prompt lands in the interactive Claude/Codex you are
         // watching (not a detached headless run).
         if (cmux.cmuxAvailable()) {
-          const surface = cmux.resolveSurface(targetSession.cwd, targetSession.agent);
+          const surface = await cmux.resolveSurface(targetSession.cwd, targetSession.agent);
           if (surface) {
             try {
-              cmux.sendPrompt(surface, promptText);
+              await cmux.sendPrompt(surface, promptText);
               log("info", `cmux send -> ${surface} (${targetSession.agent} @ ${targetSession.cwd}): "${promptText.slice(0, 80)}"`);
               pushSseEvent("pty-output", { text: `> ${promptText}` }, sessionId);
               return jsonResponse(res, 200, { ok: true, sessionId, agent: targetSession.agent, via: "cmux", surface });
@@ -1683,13 +1683,13 @@ function authOk(req, url) {
 }
 
 // GET /cmux/tree — live cmux workspaces -> terminals for the mobile mirror.
-function handleCmuxTree(req, res) {
+async function handleCmuxTree(req, res) {
   if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (!authOk(req, url)) return jsonResponse(res, 401, { error: "Unauthorized" });
   if (!cmux.cmuxAvailable()) return jsonResponse(res, 200, { available: false, workspaces: [] });
 
-  const data = cmux.mobileWorkspaces();
+  const data = await cmux.mobileWorkspaces();
   // RPC failed (socket/cmux down) — report unavailable so the app falls back to
   // the hook-based view instead of showing an empty cmux screen.
   if (!data || !Array.isArray(data.workspaces)) {
@@ -1716,13 +1716,13 @@ function handleCmuxTree(req, res) {
 }
 
 // GET /cmux/screen?id=<terminalId> — plain-text screen of one cmux terminal.
-function handleCmuxScreen(req, res) {
+async function handleCmuxScreen(req, res) {
   if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (!authOk(req, url)) return jsonResponse(res, 401, { error: "Unauthorized" });
   const id = url.searchParams.get("id");
   if (!id) return jsonResponse(res, 400, { error: "Missing id" });
-  const text = cmux.readTerminalText(id);
+  const text = await cmux.readTerminalText(id);
   // Include the screen hash so the phone can echo it back as expectedScreenHash
   // when answering an approval (the bridge rejects if the screen changed since).
   const hash = text == null ? null : crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
