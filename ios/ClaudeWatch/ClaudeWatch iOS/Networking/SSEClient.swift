@@ -221,6 +221,7 @@ final class SSEClient {
 
     private func poll() {
         guard let baseURL, let token else { return }
+        let gen = generation
 
         let statusURL = baseURL.appendingPathComponent("status")
         var request = URLRequest(url: statusURL)
@@ -228,17 +229,14 @@ final class SSEClient {
         request.timeoutInterval = 5
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
-            guard let self, error == nil, let data else { return }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let event = SSEEvent(
-                    id: nil,
-                    event: "poll-status",
-                    data: String(data: data, encoding: .utf8) ?? "{}"
-                )
-                DispatchQueue.main.async {
-                    self.onEvent?(event)
-                }
+            guard error == nil, let data else { return }
+            guard (try? JSONSerialization.jsonObject(with: data)) != nil else { return }
+            let event = SSEEvent(id: nil, event: "poll-status", data: String(data: data, encoding: .utf8) ?? "{}")
+            DispatchQueue.main.async {
+                // Drop a poll response from a superseded connection (e.g. SSE
+                // recovered or the client was torn down meanwhile).
+                guard let self, gen == self.generation else { return }
+                self.onEvent?(event)
             }
         }
         task.resume()
@@ -246,11 +244,15 @@ final class SSEClient {
 
     // MARK: - SSE Parsing
 
+    // NOTE: all the handle*/start*/stop*/parse state below runs ONLY on the main
+    // queue — the delegate marshals every callback through DispatchQueue.main
+    // (and the serial delegate queue preserves order), and connect/disconnect/
+    // retry are called from the main actor. So `generation`, the timers, and the
+    // parser buffers are single-threaded — no cross-queue races, and a stale
+    // generation is rejected at the point the event is actually consumed.
     fileprivate func handleSSEConnected(generation: Int) {
         guard generation == self.generation else { return }
-        DispatchQueue.main.async {
-            self.state = .connected
-        }
+        state = .connected
     }
 
     fileprivate func handleReceivedData(_ data: Data, generation: Int) {
@@ -319,9 +321,7 @@ final class SSEClient {
         currentEventData = []
         currentEventId = nil
 
-        DispatchQueue.main.async { [weak self] in
-            self?.onEvent?(event)
-        }
+        onEvent?(event)   // already on main (see handleReceivedData note)
     }
 
     fileprivate func handleSSEError(_ error: Error?, generation: Int) {
@@ -350,30 +350,31 @@ private final class SSESessionDelegate: NSObject, URLSessionDataDelegate {
         self.generation = generation
     }
 
+    // Delegate callbacks arrive on URLSession's serial delegate queue. We marshal
+    // each to the main queue (FIFO-preserving, since the source queue is serial)
+    // so ALL SSEClient state is touched on main only — see the note in SSEClient.
     func urlSession(
         _ session: URLSession,
         dataTask: URLSessionDataTask,
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-            client?.handleSSEConnected(generation: generation)
-            completionHandler(.allow)
-        } else {
-            client?.handleSSEError(nil, generation: generation)
-            completionHandler(.cancel)
-        }
+        let ok = (response as? HTTPURLResponse)?.statusCode == 200
+        let c = client, gen = generation
+        DispatchQueue.main.async { ok ? c?.handleSSEConnected(generation: gen) : c?.handleSSEError(nil, generation: gen) }
+        completionHandler(ok ? .allow : .cancel)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        client?.handleReceivedData(data, generation: generation)
+        let c = client, gen = generation
+        DispatchQueue.main.async { c?.handleReceivedData(data, generation: gen) }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            client?.handleSSEError(error, generation: generation)
-        } else {
-            client?.handleSSEComplete(generation: generation)
+        let c = client, gen = generation
+        DispatchQueue.main.async {
+            if let error { c?.handleSSEError(error, generation: gen) }
+            else { c?.handleSSEComplete(generation: gen) }
         }
     }
 }

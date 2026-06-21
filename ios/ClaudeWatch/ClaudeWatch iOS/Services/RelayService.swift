@@ -323,8 +323,12 @@ final class RelayService: ObservableObject {
 
     /// Sync the toggle with the bridge's actual state.
     func refreshSupervise() {
+        let gen = macGeneration
         Task { @MainActor in
             if let st = try? await bridgeClient.fetchStatus() {
+                // Drop a response that arrived after a Mac switch — the previous
+                // Mac's supervise value must not overwrite the new Mac's toggle.
+                guard gen == macGeneration else { return }
                 superviseMode = st.supervise ?? false
             }
         }
@@ -676,7 +680,9 @@ final class RelayService: ObservableObject {
                 }
                 // Success — only NOW mark resolved + remove the card.
                 if !permissionId.isEmpty { resolvedPermissionIds.insert(permissionId) }
-                let line = TerminalLine(text: "→ \(optionLabel)", type: isLast ? .error : .output)
+                // Only a standard-permission DENY is an error; an AskUserQuestion
+                // choice (even the last) is a normal selection.
+                let line = TerminalLine(text: "→ \(optionLabel)", type: isDeny ? .error : .output)
                 terminalBuffer.append(line)
                 recentTerminalLines = terminalBuffer.getLast(15)
                 clearPendingApproval(for: approval)
@@ -789,17 +795,17 @@ final class RelayService: ObservableObject {
     func sendCommand(text: String, sessionId: String? = nil) async -> Bool {
         let sid = sessionId ?? sessions.first(where: { $0.activity == .running })?.id
 
-        // Show in terminal
-        let cmdLine = TerminalLine(text: "> \(text)", type: .command, sessionId: sid)
-        terminalBuffer.append(cmdLine)
-        appendToSession(cmdLine, sessionId: sid)
-        recentTerminalLines = terminalBuffer.getLast(15)
-
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
         do {
             try await bridgeClient.sendCommand(text: text + "\n", sessionId: sid)
+            // Echo the command into the transcript ONLY after the bridge accepts
+            // it — appending before the send duplicated the line on retry.
+            let cmdLine = TerminalLine(text: "> \(text)", type: .command, sessionId: sid)
+            terminalBuffer.append(cmdLine)
+            appendToSession(cmdLine, sessionId: sid)
             setThinking(true, sessionId: sid)
+            recentTerminalLines = terminalBuffer.getLast(15)
             return true
         } catch {
             let errLine = TerminalLine(text: "✗ 전송 실패 — 다시 시도하세요", type: .error, sessionId: sid)
@@ -1001,8 +1007,9 @@ final class RelayService: ObservableObject {
     private func handleTaskComplete(_ data: String) {
         let sid = parseJSON(data)?["sessionId"] as? String
         setThinking(false, sessionId: sid)
-        let line = TerminalLine(text: "Task completed", type: .system)
+        let line = TerminalLine(text: "Task completed", type: .system, sessionId: sid)
         terminalBuffer.append(line)
+        appendToSession(line, sessionId: sid)
         recentTerminalLines = terminalBuffer.getLast(15)
         notificationService.postTaskComplete()
         updateWatchState()
@@ -1010,9 +1017,11 @@ final class RelayService: ObservableObject {
 
     private func handleError(_ data: String) {
         guard let json = parseJSON(data) else { return }
+        let sid = json["sessionId"] as? String
         let errorMsg = json["error"] as? String ?? "Unknown error"
-        let line = TerminalLine(text: errorMsg, type: .error)
+        let line = TerminalLine(text: errorMsg, type: .error, sessionId: sid)
         terminalBuffer.append(line)
+        appendToSession(line, sessionId: sid)
         recentTerminalLines = terminalBuffer.getLast(15)
     }
 
