@@ -1,17 +1,19 @@
 import SwiftUI
-import WatchKit
 
 struct ApprovalView: View {
-    @EnvironmentObject private var session: WatchViewState
     @Environment(\.dismiss) private var dismiss
 
     let request: ApprovalRequest
-    @State private var hasResponded = false
 
+    // BETA SCOPE: the Watch shows the approval for awareness but does NOT answer
+    // it. The bridge's codex approval path is fail-closed (requires a pinned
+    // terminalId + live screen hash that only the iPhone sends), so answering
+    // from the Watch would either be rejected or, worse, look successful while
+    // the agent kept waiting. Until the Watch path is made transactional + pins
+    // the terminal/hash, approvals are answered on the iPhone. No middle state.
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                // Question text
                 if let question = request.question {
                     Text(question)
                         .font(.system(size: 13, weight: .semibold))
@@ -23,88 +25,56 @@ struct ApprovalView: View {
                         .foregroundColor(.white)
                 }
 
-                // Action summary / header
                 if !request.actionSummary.isEmpty && request.actionSummary != request.toolName {
                     Text(request.actionSummary)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(Theme.Accent.approval)
-                        .lineLimit(2)
+                        .lineLimit(3)
+                }
+
+                // Read-only option list (what's being asked) — not tappable.
+                ForEach(Array(request.options.enumerated()), id: \.element.id) { index, option in
+                    HStack(spacing: 6) {
+                        Text("\(index + 1).")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Theme.Text.secondary)
+                        Text(option.label)
+                            .font(.system(size: 12))
+                            .foregroundColor(Theme.Text.secondary)
+                            .lineLimit(2)
+                        Spacer()
+                    }
                 }
 
                 Divider().background(Theme.Text.dimmed)
 
-                // Dynamic options from server
-                ForEach(Array(request.options.enumerated()), id: \.element.id) { index, option in
-                    Button {
-                        respond(option: option, index: index)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("\(index + 1).")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(Theme.Text.secondary)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.label)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .lineLimit(2)
-
-                                if let desc = option.description, !desc.isEmpty {
-                                    Text(desc)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(Theme.Text.secondary)
-                                        .lineLimit(2)
-                                }
-                            }
-
-                            Spacer()
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 8)
-                        .background(colorForOption(index).opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(colorForOption(index).opacity(0.4), lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(hasResponded)
+                // The actual call to action for this beta.
+                HStack(spacing: 6) {
+                    Image(systemName: "iphone")
+                        .font(.system(size: 13))
+                        .foregroundColor(Theme.Accent.approval)
+                    Text("iPhone에서 승인하세요")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.Accent.approval.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Theme.Accent.approval.opacity(0.4), lineWidth: 1)
+                )
+
+                Button("닫기") { dismiss() }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.Text.secondary)
             }
             .padding(.horizontal, 6)
             .padding(.top, 4)
         }
         .background(Theme.Background.primary)
-    }
-
-    private func colorForOption(_ index: Int) -> Color {
-        // First option: green, last option: red, middle: orange
-        if request.options.count <= 1 { return Theme.Accent.success }
-        if index == 0 { return Theme.Accent.success }
-        if index == request.options.count - 1 { return Theme.Accent.error }
-        return Theme.Text.primary
-    }
-
-    private func respond(option: ApprovalRequest.OptionItem, index: Int) {
-        guard !hasResponded else { return }
-        hasResponded = true
-
-        let isLast = index == request.options.count - 1
-        WKInterfaceDevice.current().play(isLast ? .failure : .success)
-
-        // For AskUserQuestion: send the option label
-        // For permission prompts: first = allow, last = deny
-        if request.question != nil {
-            session.respondToPermissionWithOption(option.label, index: index)
-        } else {
-            let approved = index != request.options.count - 1
-            session.respondToPermission(approved: approved)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            dismiss()
-        }
     }
 }
 

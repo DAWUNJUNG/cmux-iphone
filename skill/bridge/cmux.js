@@ -185,20 +185,18 @@ export async function resolveTerminalId(cwd) {
   return null;
 }
 
-// Find the live terminal that is actually SHOWING a given approval command, by
-// reading each terminal's screen and matching the command text. This is how a
-// codex approval is pinned to the RIGHT pane — cwd alone is ambiguous (a plain
-// shell and a codex pane can share a cwd). Returns:
-//   { id }                 — exactly one terminal shows the command (safe to pin)
-//   { id: null, ambiguous } — zero or many candidates (caller must fail closed)
+// Find the live terminal that is actually SHOWING a codex exec-approval prompt,
+// so the answer ("y"/Esc) lands on the RIGHT pane. cwd alone is ambiguous (a
+// shell and a codex pane share a cwd), and a command can linger in a shell's
+// SCROLLBACK — so we look ONLY at the VISIBLE rows and require the codex
+// approval markers ("Yes, proceed" + "No" option), which a plain shell never
+// shows. The command only disambiguates among multiple visible approval screens.
+// Returns:
+//   { id }                  — exactly one terminal is visibly showing this approval
+//   { id: null, ambiguous } — zero (no auto-pin) or many (fail closed)
 const normScreen = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
 
 export async function findCodexApprovalTerminal(command) {
-  const needleFull = normScreen(command);
-  // Too short/generic to disambiguate safely.
-  if (needleFull.length < 6) return { id: null, ambiguous: true };
-  const needle = needleFull.slice(0, 60);
-
   const data = await mobileWorkspaces();
   if (!data || !Array.isArray(data.workspaces)) return { id: null, ambiguous: false };
 
@@ -209,13 +207,23 @@ export async function findCodexApprovalTerminal(command) {
   }
   if (ids.length === 0) return { id: null, ambiguous: false };
 
-  const matches = [];
+  const cmdNeedle = normScreen(command).slice(0, 40);
+  const candidates = [];
   for (const id of ids) {
-    const text = await readTerminalText(id);
-    if (text && normScreen(text).includes(needle)) matches.push(id);
+    const vis = await readVisibleText(id);          // VISIBLE rows only — never scrollback
+    if (!vis) continue;
+    const n = normScreen(vis);
+    // Codex exec-approval markers (a shell scrollback can't show both).
+    const isApprovalScreen = /yes,?\s+proceed/.test(n) && /\bno\b/.test(n);
+    if (!isApprovalScreen) continue;
+    candidates.push({ id, hasCmd: cmdNeedle.length >= 6 && n.includes(cmdNeedle) });
   }
-  if (matches.length === 1) return { id: matches[0], ambiguous: false };
-  return { id: null, ambiguous: matches.length > 1 };
+  if (candidates.length === 0) return { id: null, ambiguous: false };
+  if (candidates.length === 1) return { id: candidates[0].id, ambiguous: false };
+  // Multiple panes visibly showing an approval — disambiguate by the command.
+  const byCmd = candidates.filter((c) => c.hasCmd);
+  if (byCmd.length === 1) return { id: byCmd[0].id, ambiguous: false };
+  return { id: null, ambiguous: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +275,20 @@ function spansToLines(spans) {
     lines.push(line.replace(/\s+$/, ""));
   }
   return lines;
+}
+
+// VISIBLE rows only (current viewport) — no scrollback. Used to detect a live
+// codex approval prompt without matching stale commands in shell history.
+export async function readVisibleText(id) {
+  if (!CMUX_BIN || !id) return null;
+  try {
+    const r = await rpc("mobile.terminal.replay", { terminal_id: id });
+    const rg = r && r.render_grid;
+    if (!rg) return null;
+    return spansToLines(rg.row_spans).join("\n");
+  } catch {
+    return null;
+  }
 }
 
 // Plain-text screen of one terminal via mobile.terminal.replay, which (unlike
