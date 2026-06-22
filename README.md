@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="logo.png" width="140" alt="Cmux iPhone" />
-</p>
-
 <h1 align="center"><strong>Cmux iPhone</strong></h1>
 
 <p align="center">
@@ -55,7 +51,7 @@ The bridge binds the LAN; a pairing code + per-device token are the auth boundar
 ## Install — the Mac bridge
 
 ```bash
-git clone https://github.com/lim-won/cmux-iphone && cd cmux-iphone/skill/bridge
+git clone https://github.com/limseungwon/cmux-iphone && cd cmux-iphone/skill/bridge
 npm ci                        # reproducible install (use `npm install` if no lockfile)
 npm link                      # optional: puts `cmux-iphone` on your PATH
 cmux-iphone setup             # or: node bin/cmux-iphone.js setup
@@ -115,23 +111,23 @@ Watch id, and the Watch's companion id all derive from it):
 
 ```bash
 ./scripts/configure-ios.sh com.yourname.cmuxiphone
-open ios/ClaudeWatch/ClaudeWatch.xcodeproj
+open ios/CmuxiPhone/CmuxiPhone.xcodeproj
 ```
 
 **2. Add your Apple ID to Xcode:** Xcode → Settings → Accounts → **+** → Apple ID
 (a free account works).
 
-**3. Set the Team on BOTH targets:** select the project → for **ClaudeWatch** and
-**ClaudeWatchWatch**, Signing & Capabilities → *Automatically manage signing* →
+**3. Set the Team on BOTH targets:** select the project → for **CmuxiPhone** and
+**CmuxiPhoneWatch**, Signing & Capabilities → *Automatically manage signing* →
 **Team = your Personal Team**. (The bundle ids are already set by step 1.)
 
 **4. Enable Developer Mode on the iPhone (iOS 16+):** Settings → Privacy &
 Security → **Developer Mode** → On → restart. (Do the same on the Watch if
 deploying to it: Watch app / watchOS Settings → Privacy & Security.)
 
-**5. Run:** plug in your iPhone (with the Watch paired), pick the **ClaudeWatch**
+**5. Run:** plug in your iPhone (with the Watch paired), pick the **CmuxiPhone**
 scheme + your iPhone as the destination → **Run** (⌘R). For the Watch app, pick
-the **ClaudeWatchWatch** scheme and the paired-Watch destination (deploy via the
+the **CmuxiPhoneWatch** scheme and the paired-Watch destination (deploy via the
 iPhone if direct watch install fails).
 
 **6. Trust the developer cert:** on the iPhone, Settings → General → VPN & Device

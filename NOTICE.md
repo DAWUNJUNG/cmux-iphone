@@ -1,6 +1,6 @@
 # Attribution
 
-Cmux iPhone is a fork of **cmux-iphone** by **shobhit99**
+Cmux iPhone is a fork of **claude-watch** by **shobhit99**
 (https://github.com/shobhit99/claude-watch), whose README declares the project
 MIT-licensed. This repository preserves that MIT license (see `LICENSE`) and
 adds the original author's copyright alongside the fork's contributors.
@@ -15,8 +15,10 @@ issue.
 
 ## Trademarks
 
-"Claude" and the Claude logo/mascot are trademarks of Anthropic. This project is
-an independent, community tool and is **not affiliated with or endorsed by
-Anthropic**. Any Anthropic marks or logo assets bundled in the app are used for
-identification only; verify Anthropic's brand guidelines before redistributing
-them, and replace them if in doubt.
+The app ships with **neutral icons**. **No** Claude/Anthropic or OpenAI/Codex
+logo or mascot assets are bundled or redistributed. "Claude" is a trademark of
+Anthropic; "Codex" and "OpenAI" are trademarks of OpenAI. These names appear only
+as **text labels identifying the agent type**.
+
+This project is an **independent community project** and is **not affiliated with,
+sponsored by, or endorsed by** Anthropic or OpenAI.

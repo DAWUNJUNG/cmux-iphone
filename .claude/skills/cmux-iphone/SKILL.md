@@ -1,14 +1,14 @@
 ---
 name: cmux-iphone
-description: Bridge your Claude Code session to the Claude Watch app on Apple Watch
-author: shobhit
+description: Bridge your Claude Code session to the Cmux iPhone app on iPhone and Apple Watch
+author: limseungwon
 version: 0.1.0
 ---
 
-# Claude Watch Bridge
+# Cmux iPhone Bridge
 
 Starts a local bridge server that connects your active Claude Code session
-to the Claude Watch iOS/watchOS app.
+to the Cmux iPhone iOS/watchOS app.
 
 ## What it does
 - Runs a Node.js bridge server on your LAN
@@ -18,7 +18,7 @@ to the Claude Watch iOS/watchOS app.
 
 ## Usage
 Run `/cmux-iphone` to start the bridge.
-Enter the pairing code in the Claude Watch iPhone app.
+Enter the pairing code in the Cmux iPhone iPhone app.
 
 ## Setup
 The bridge requires Node.js 18+ (its only dependency is `bonjour-service`).
