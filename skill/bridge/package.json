@@ -1,6 +1,6 @@
 {
   "name": "cmux-iphone-bridge",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Bridge server between Claude Code and Cmux iPhone iOS app",
   "type": "module",
   "main": "server.js",

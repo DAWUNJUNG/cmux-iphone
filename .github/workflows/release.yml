@@ -36,6 +36,7 @@ jobs:
           # Self-contained package: the bridge + the scripts cmux-iphone shells out to.
           cp -R skill/bridge/. "$stage/bridge/"
           cp skill/setup.sh skill/setup-hooks.sh "$stage/"
+          cp LICENSE NOTICE.md "$stage/"
           # Reproducible, prod-only deps (pure JS → safe to vendor, no compile).
           ( cd "$stage/bridge" && rm -rf node_modules && npm ci --omit=dev )
           find dist -name '.DS_Store' -delete

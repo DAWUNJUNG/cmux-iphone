@@ -1,11 +1,12 @@
 # Homebrew formula for cmux-iphone.
 #
-# This is the TEMPLATE that lives in your tap repo (OWNER/homebrew-tap) at
-# Formula/cmux-iphone.rb. Replace OWNER with your GitHub username. After the
-# first release, the GitHub Action (mislav/bump-homebrew-formula-action) rewrites
-# `url` + `sha256` automatically on every new tag — you only edit OWNER once.
+# This formula lives in the tap repo (limseungwon/homebrew-tap) at
+# Formula/cmux-iphone.rb. On the FIRST release, set the real `sha256` (CI bumps
+# `url` + `sha256` automatically on every new tag thereafter via
+# mislav/bump-homebrew-formula-action). Forkers: replace `limseungwon` with your
+# own GitHub username in `homepage`/`url` and the tap repo.
 #
-# Users then:  brew install OWNER/tap/cmux-iphone && cmux-iphone setup
+# Users then:  brew install limseungwon/tap/cmux-iphone && cmux-iphone setup
 #
 # The release tarball is the self-contained bridge package (bridge/ + setup.sh +
 # setup-hooks.sh) with node_modules vendored (the only dep, bonjour-service, is
@@ -13,8 +14,8 @@
 
 class CmuxIphone < Formula
   desc "Bridge Claude Code / Codex / cmux sessions to the Cmux iPhone iPhone app"
-  homepage "https://github.com/OWNER/cmux-iphone"
-  url "https://github.com/OWNER/cmux-iphone/releases/download/v0.1.0/cmux-iphone-0.1.0.tar.gz"
+  homepage "https://github.com/limseungwon/cmux-iphone"
+  url "https://github.com/limseungwon/cmux-iphone/releases/download/v0.1.0/cmux-iphone-0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000" # set on first release; CI bumps after
   license "MIT"
 
@@ -55,6 +56,9 @@ class CmuxIphone < Formula
 
       cmux users: `cmux-iphone setup` runs the bridge inside cmux (live mirror).
       Without cmux you can instead: brew services start cmux-iphone
+
+      After `brew upgrade cmux-iphone`, re-run `cmux-iphone setup` once so the
+      LaunchAgent / cmux workspace re-point at the new version.
     EOS
   end
 
