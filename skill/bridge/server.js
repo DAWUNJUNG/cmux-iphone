@@ -8,7 +8,7 @@ import { spawn as childSpawn } from "node:child_process";
 import { Bonjour } from "bonjour-service";
 import * as cmux from "./cmux.js";
 import { createDeviceStore } from "./lib/devices.js";
-import { paths as cfgPaths, getConfig } from "./lib/config.js";
+import { paths as cfgPaths, getConfig, writeRuntime, clearRuntime } from "./lib/config.js";
 
 // ---------------------------------------------------------------------------
 // Logging (must be defined before use)
@@ -63,21 +63,27 @@ if (CODEX_BIN) {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const PORT_RANGE_START = 7860;
-const PORT_RANGE_END = 7869;
-const PAIRING_CODE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-// Pairing code is ROTATING by default: a fresh random 6-digit code with a 24h
-// TTL, regenerated on restart and cleared after a device pairs. A FIXED code
-// (survives restarts + re-pairing, always retrievable via `cmux-iphone pair`)
-// can be pinned two ways, in priority order:
+// Single source of truth: ports, bind interface, and pairing TTL all come from
+// lib/config.js (config.json merged over defaults), not hardcoded here. Env still
+// overrides at runtime (PORT, HOST, CMUX_IPHONE_HOOK_PORT, CMUX_IPHONE_PAIR_CODE).
+const CONFIG = getConfig();
+const PORT_RANGE_START = CONFIG.ports.apiPort;
+const PORT_RANGE_END = CONFIG.ports.apiPortRangeEnd;
+const BIND_ADDRESS = process.env.HOST || CONFIG.bindAddress || "0.0.0.0";
+const PAIRING_CODE_TTL_MS = CONFIG.pairing?.ttlMs ?? 24 * 60 * 60 * 1000; // rotating-mode TTL
+// Pairing default is FIXED (per-machine random 6-digit, persisted by
+// `cmux-iphone setup`, never rotates, rate-limited 5/5min). A FIXED code is
+// pinned two ways, in priority order:
 //   1. CMUX_IPHONE_PAIR_CODE env var
 //   2. config.json  pairing.fixedCode  — what `cmux-iphone setup` persists so
 //      non-developers get one stable code they never have to hunt for again.
+// ROTATING mode (fresh code per restart, PAIRING_CODE_TTL_MS TTL, cleared after a
+// device pairs) applies only when neither is set — opt in via `setup --rotating`.
 // NEVER ship a hardcoded default here — a baked-in code is public in the repo and
 // defeats pairing auth for every install. A persisted code is per-machine, random,
 // and stored 0600 (not in the repo).
 const FIXED_PAIRING_CODE =
-  process.env.CMUX_IPHONE_PAIR_CODE || getConfig().pairing?.fixedCode || null;
+  process.env.CMUX_IPHONE_PAIR_CODE || CONFIG.pairing?.fixedCode || null;
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
 const SSE_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -173,8 +179,11 @@ function generatePairingCode() {
 const TOKEN_FILE = path.join(os.homedir(), "Library", "Application Support", "cmux-iphone", "session-token");
 
 // Hooks run on a separate loopback-only listener with a shared secret, so the
-// phone-facing listener never exposes hook routes (defense-in-depth).
-const HOOK_PORT = 7861;
+// phone-facing listener never exposes hook routes (defense-in-depth). The port
+// must match what setup-hooks.sh wrote into Claude/Codex hooks, so honor the
+// same CMUX_IPHONE_HOOK_PORT override (and config) the install scripts use.
+const HOOK_PORT =
+  parseInt(process.env.CMUX_IPHONE_HOOK_PORT, 10) || CONFIG.ports.hookPort || 7861;
 const SECRET_FILE = path.join(os.homedir(), "Library", "Application Support", "cmux-iphone", "hook-secret");
 let hookSecret = null;
 
@@ -2012,7 +2021,7 @@ async function onHookRequest(req, res) {
 function tryListen(server, port) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "0.0.0.0", () => {
+    server.listen(port, BIND_ADDRESS, () => {
       server.removeListener("error", reject);
       resolve(port);
     });
@@ -2047,7 +2056,18 @@ async function startServer() {
     process.exit(1);
   }
 
-  log("info", `Bridge server listening on 0.0.0.0:${boundPort}`);
+  log("info", `Bridge server listening on ${BIND_ADDRESS}:${boundPort}`);
+
+  // Record the ACTUALLY-bound port so the CLI (status/doctor/pair) probes the
+  // right place even when the configured start port (7860) was busy and we
+  // fell back to e.g. 7862.
+  writeRuntime({
+    apiPort: boundPort,
+    hookPort: HOOK_PORT,
+    bindAddress: BIND_ADDRESS,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
 
   loadPersistedToken();
   loadOrCreateHookSecret();
@@ -2147,6 +2167,8 @@ async function startServer() {
       pending.resolve({ behavior: "deny", reason: "Server shutting down" });
     }
     pendingPermissions.clear();
+
+    clearRuntime(); // remove the stale bound-port marker
 
     server.close(() => {
       log("info", "Server closed");

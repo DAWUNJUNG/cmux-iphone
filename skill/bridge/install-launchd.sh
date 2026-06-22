@@ -18,7 +18,8 @@
 #
 set -euo pipefail
 
-LABEL="com.claudewatch.bridge"
+# Must match paths.plistLabel in lib/config.js (the CLI's restart/uninstall target).
+LABEL="com.cmuxiphone.bridge"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/cmux-iphone"
 UID_NUM="$(id -u)"

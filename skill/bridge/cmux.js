@@ -92,6 +92,28 @@ export async function ensureBridgeWorkspace(scriptPath) {
   return { created: true };
 }
 
+// Tear down the "Agent Bridge" cmux workspace so `uninstall` actually STOPS the
+// in-cmux bridge (otherwise it keeps serving the LAN after uninstall). Best-effort:
+// returns { removed, reason }. Never throws.
+export async function removeBridgeWorkspace() {
+  if (!CMUX_BIN) return { removed: false, reason: "cmux not found" };
+  let data;
+  try { data = await mobileWorkspaces(); } catch { data = null; }
+  if (!data || !Array.isArray(data.workspaces)) {
+    return { removed: false, reason: "cmux RPC unreachable" };
+  }
+  const ws = data.workspaces.find((w) => w.title === "Agent Bridge");
+  if (!ws) return { removed: false, reason: "no Agent Bridge workspace" };
+  const ref = ws.id ?? ws.workspace_id ?? ws.ref;
+  if (!ref) return { removed: false, reason: "workspace id not resolvable" };
+  try {
+    await cmux(["close-workspace", "--workspace", String(ref)]);
+    return { removed: true };
+  } catch (e) {
+    return { removed: false, reason: e.message };
+  }
+}
+
 const norm = (p) => (typeof p === "string" ? p.replace(/\/+$/, "") : p);
 
 // Resolve a session's cwd to a live cmux TERMINAL UUID (not a surface ref).

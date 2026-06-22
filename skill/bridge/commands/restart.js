@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import os from "node:os";
-import { getConfig, paths } from "../lib/config.js";
+import { getConfig, getRuntime, paths } from "../lib/config.js";
 
 export async function run() {
   const cfg = getConfig();
@@ -17,8 +17,20 @@ export async function run() {
       return 1;
     }
   }
-  console.log("Runner is cmux (or unset): the in-cmux supervisor relaunches the bridge");
-  console.log('automatically when it exits. To force a restart, close + reopen the');
-  console.log('"Agent Bridge" cmux workspace, or run \'cmux-iphone setup\'.');
+  // cmux (or unset) runner: the in-cmux supervisor (run-in-cmux.sh) relaunches the
+  // bridge whenever it exits, so a restart = terminate the running process and let
+  // it come back. The pid is in runtime.json (written by the server when it binds).
+  const rt = getRuntime();
+  if (rt.pid) {
+    try {
+      process.kill(rt.pid, "SIGTERM");
+      console.log(`Restarted (signaled bridge pid ${rt.pid}; the in-cmux supervisor relaunches it).`);
+      return 0;
+    } catch (e) {
+      console.log(`Could not signal bridge pid ${rt.pid}: ${e.message}`);
+    }
+  }
+  console.log("No running bridge found. Close + reopen the \"Agent Bridge\" cmux");
+  console.log("workspace, or run 'cmux-iphone setup'.");
   return 0;
 }

@@ -1,13 +1,14 @@
 // cmux-iphone status — live bridge status, addresses, paired devices.
 
 import { getConfig } from "../lib/config.js";
-import { api, readAnyToken, bridgeUp } from "../lib/bridge-client.js";
+import { api, readAnyToken, findBridgePort } from "../lib/bridge-client.js";
 import { lanIPv4, tailscaleIPv4 } from "../lib/sys.js";
 
 export async function run() {
   const cfg = getConfig();
-  const port = cfg.ports.apiPort;
-  const up = await bridgeUp();
+  const livePort = await findBridgePort();
+  const up = livePort !== null;
+  const port = livePort ?? cfg.ports.apiPort;
 
   console.log(`Bridge:    ${up ? "running" : "NOT running"}`);
   if (!up) {

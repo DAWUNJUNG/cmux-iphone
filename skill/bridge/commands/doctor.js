@@ -4,7 +4,7 @@
 import os from "node:os";
 import { getConfig, paths } from "../lib/config.js";
 import { fileMode, exists, which } from "../lib/sys.js";
-import { bridgeUp, api, readAnyToken } from "../lib/bridge-client.js";
+import { findBridgePort, api, readAnyToken } from "../lib/bridge-client.js";
 import * as cmux from "../cmux.js";
 
 export async function run() {
@@ -42,8 +42,9 @@ export async function run() {
     }
   }
 
-  const up = await bridgeUp();
-  add(up ? "PASS" : "FAIL", "Bridge", up ? `/health OK on :${cfg.ports.apiPort}` : "not running");
+  const livePort = await findBridgePort();
+  const up = livePort !== null;
+  add(up ? "PASS" : "FAIL", "Bridge", up ? `/health OK on :${livePort}` : "not running");
 
   if (up) {
     const token = readAnyToken();

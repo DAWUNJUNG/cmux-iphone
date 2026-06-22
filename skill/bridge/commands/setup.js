@@ -7,12 +7,22 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getConfig, saveConfig, paths } from "../lib/config.js";
+import { getConfig, saveConfig, getRuntime, paths } from "../lib/config.js";
 import { which, lanIPv4, tailscaleIPv4 } from "../lib/sys.js";
 import { api, bridgeUp } from "../lib/bridge-client.js";
 import * as cmux from "../cmux.js";
 
-const sh = (p) => fileURLToPath(new URL(p, import.meta.url));
+const sh = (p) => stablePath(fileURLToPath(new URL(p, import.meta.url)));
+
+// Under Homebrew, import.meta.url resolves to a version-pinned Cellar realpath
+// (…/Cellar/cmux-iphone/<version>/…). Baking that into the LaunchAgent plist or
+// the cmux workspace command means `brew upgrade` (which deletes the old Cellar
+// dir) breaks the bridge. Rewrite it to the STABLE opt symlink, which brew
+// repoints on every upgrade. No-op for non-Homebrew installs.
+function stablePath(p) {
+  const m = p.match(/^(.*)\/Cellar\/cmux-iphone\/[^/]+\/(.*)$/);
+  return m ? `${m[1]}/opt/cmux-iphone/${m[2]}` : p;
+}
 
 export async function run(args = []) {
   const cfg = getConfig();
@@ -61,14 +71,20 @@ export async function run(args = []) {
 
   // 3) Persist config (merge, never clobber)
   saveConfig({ runner, cmux: { ...cfg.cmux, enabled: runner === "cmux" } });
-  // Give every install ONE stable pairing code so non-developers never have to
-  // chase a rotating code: random 6-digit, stored 0600 (not in the repo),
-  // retrievable anytime with `cmux-iphone pair`. The CMUX_IPHONE_PAIR_CODE env
-  // var still overrides; generated once, kept on re-run.
-  let pairCode = process.env.CMUX_IPHONE_PAIR_CODE || cfg.pairing?.fixedCode || null;
-  if (!pairCode) {
-    pairCode = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
-    saveConfig({ pairing: { ...cfg.pairing, mode: "fixed", fixedCode: pairCode } });
+  // Pairing. DEFAULT is a STABLE per-machine code so non-developers never have to
+  // chase a rotating one: random 6-digit, stored 0600 (not in the repo), retrievable
+  // anytime with `cmux-iphone pair`; the CMUX_IPHONE_PAIR_CODE env var overrides;
+  // generated once, kept on re-run. `--rotating` opts into the higher-security
+  // rotating mode (fresh code per restart, 24h TTL, cleared after a device pairs).
+  const wantRotating = args.includes("--rotating");
+  let pairCode = null;
+  if (wantRotating) {
+    saveConfig({ pairing: { ...cfg.pairing, fixedCode: null } });
+    console.log("• pairing: rotating code (fresh per restart, 24h TTL) — re-show with 'cmux-iphone pair'");
+  } else {
+    pairCode = process.env.CMUX_IPHONE_PAIR_CODE || cfg.pairing?.fixedCode
+      || crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+    saveConfig({ pairing: { ...cfg.pairing, fixedCode: pairCode } });
   }
   console.log(`✓ config written → ${paths.configFile}`);
 
@@ -90,6 +106,16 @@ export async function run(args = []) {
       console.log(r.created
         ? '✓ created "Agent Bridge" cmux workspace (runs the bridge inside cmux)'
         : '✓ "Agent Bridge" cmux workspace already present');
+      // An already-running bridge holds the OLD pairing config until it restarts;
+      // if we just switched to rotating, bounce it so the change applies now (the
+      // in-cmux supervisor relaunches it).
+      if (!r.created && wantRotating) {
+        const rt = getRuntime();
+        if (rt.pid) {
+          try { process.kill(rt.pid, "SIGTERM"); console.log("• bounced running bridge to apply --rotating"); }
+          catch { /* will apply on next restart */ }
+        }
+      }
     } catch (err) {
       console.error(`✗ could not create the cmux workspace: ${err.message}`);
       return 1;

@@ -24,6 +24,7 @@ export const paths = {
   devicesFile: path.join(DATA_DIR, "devices.json"),       // per-device tokens
   hookSecretFile: path.join(DATA_DIR, "hook-secret"),
   cmuxPasswordFile: path.join(HOME, ".config", "cmux-iphone", "cmux-password"),
+  runtimeFile: path.join(DATA_DIR, "runtime.json"),     // actual bound port/pid (written by server)
   plistLabel: "com.cmuxiphone.bridge",
   launchAgentPlist: path.join(HOME, "Library", "LaunchAgents", "com.cmuxiphone.bridge.plist"),
 };
@@ -31,8 +32,16 @@ export const paths = {
 const DEFAULTS = {
   version: 1,
   ports: { apiPort: 7860, apiPortRangeEnd: 7869, hookPort: 7861 },
+  // Interface the phone-facing listener binds to. "0.0.0.0" = every interface
+  // (LAN + Tailscale). Set to a Tailscale IP (e.g. "100.x.y.z") or "127.0.0.1"
+  // to restrict who can reach the bridge. Env HOST overrides at runtime.
+  bindAddress: "0.0.0.0",
   cmux: { enabled: null, bin: null }, // enabled:null = auto-detect at runtime
-  pairing: { mode: "rotating", fixedCode: null, ttlMs: 24 * 60 * 60 * 1000 },
+  // Pairing. `fixedCode` is the SINGLE source of truth the server reads:
+  //   set   → FIXED per-machine code (default; persisted by `setup`, rate-limited)
+  //   null  → ROTATING (fresh code per restart, `ttlMs` TTL, cleared after pairing)
+  // `cmux-iphone setup --rotating` clears fixedCode to opt into rotating.
+  pairing: { fixedCode: null, ttlMs: 24 * 60 * 60 * 1000 },
   runner: null, // "cmux" | "launchd" — chosen at setup
 };
 
@@ -64,4 +73,29 @@ export function saveConfig(patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
   return next;
+}
+
+/** Runtime facts the server writes after it actually binds (real port may differ
+ *  from the configured start if it was busy). Read by the CLI so `status`/`doctor`
+ *  probe the port the bridge is REALLY on. Returns {} when absent/unreadable. */
+export function getRuntime() {
+  try {
+    const j = JSON.parse(fs.readFileSync(paths.runtimeFile, "utf-8"));
+    return j && typeof j === "object" ? j : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the actually-bound runtime port/pid (0600). Best-effort. */
+export function writeRuntime(info) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(paths.runtimeFile, JSON.stringify(info, null, 2), { mode: 0o600 });
+  } catch { /* best-effort */ }
+}
+
+/** Remove the runtime file (on graceful shutdown) so a stale port can't mislead. */
+export function clearRuntime() {
+  try { fs.rmSync(paths.runtimeFile, { force: true }); } catch { /* ignore */ }
 }
