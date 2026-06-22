@@ -19,12 +19,14 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    env:
+      COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Build vendored tarball
         run: |
@@ -49,10 +51,11 @@ jobs:
           files: cmux-iphone-*.tar.gz
 
       - name: Bump Homebrew formula in the tap
+        # Skips cleanly when the tap PAT isn't configured (first release / forks).
+        # Set the COMMITTER_TOKEN secret to enable automatic formula bumps.
+        if: ${{ env.COMMITTER_TOKEN != '' }}
         uses: mislav/bump-homebrew-formula-action@v3
         with:
           formula-name: cmux-iphone
           homebrew-tap: ${{ github.repository_owner }}/homebrew-tap
           download-url: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cmux-iphone-${{ env.V }}.tar.gz
-        env:
-          COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
