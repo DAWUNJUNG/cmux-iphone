@@ -90,6 +90,34 @@ export async function api(method, route, { token, body, timeoutMs = 4000 } = {})
   }
 }
 
+/** Call the LOOPBACK control listener (the hook port, 127.0.0.1 only, secret-gated)
+ *  for local-only operations like reading the pairing code. Goes straight to
+ *  127.0.0.1:<hookPort> with the hook secret, so it works regardless of the API's
+ *  bindAddress (even Tailscale-only) and can't be reached by a rebinding browser
+ *  (which has no secret). Returns {status, json, ok}. */
+export async function controlApi(method, route, { timeoutMs = 4000 } = {}) {
+  const rt = getRuntime();
+  const port = parseInt(process.env.CMUX_IPHONE_HOOK_PORT, 10) || rt.hookPort || getConfig().ports.hookPort || 7861;
+  let secret = "";
+  try { secret = fs.readFileSync(paths.hookSecretFile, "utf-8").trim(); } catch { /* no secret yet */ }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method,
+      headers: { "Content-Type": "application/json", "x-cmux-iphone-secret": secret },
+      signal: ctrl.signal,
+    });
+    let json = null;
+    try { json = await res.json(); } catch { /* non-JSON */ }
+    return { status: res.status, json, ok: res.ok };
+  } catch (e) {
+    return { status: 0, json: null, ok: false, error: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Quick liveness probe of the known target (no range scan). Caches on success. */
 export async function bridgeUp() {
   const t = defaultTarget();

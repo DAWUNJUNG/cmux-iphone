@@ -4,7 +4,7 @@
 //   cmux-iphone pair --list          list paired devices
 //   cmux-iphone pair --revoke <id>   revoke one device's token
 
-import { api, readAnyToken } from "../lib/bridge-client.js";
+import { api, controlApi, readAnyToken } from "../lib/bridge-client.js";
 
 export async function run(args) {
   if (args.includes("--list")) return list();
@@ -14,7 +14,7 @@ export async function run(args) {
 }
 
 async function showCode() {
-  const r = await api("GET", "/pair-code"); // loopback-only on the bridge
+  const r = await controlApi("GET", "/pair-code"); // loopback control listener, secret-gated
   if (!r.ok) {
     console.log("Bridge not reachable. Check 'cmux-iphone status'.");
     return 1;

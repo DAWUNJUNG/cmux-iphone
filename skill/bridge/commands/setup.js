@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig, saveConfig, getRuntime, paths } from "../lib/config.js";
 import { which, lanIPv4, tailscaleIPv4 } from "../lib/sys.js";
-import { api, bridgeUp } from "../lib/bridge-client.js";
+import { api, controlApi, bridgeUp } from "../lib/bridge-client.js";
 import * as cmux from "../cmux.js";
 
 const sh = (p) => stablePath(fileURLToPath(new URL(p, import.meta.url)));
@@ -132,13 +132,16 @@ export async function run(args = []) {
       console.log(r.created
         ? '✓ created "Agent Bridge" cmux workspace (runs the bridge inside cmux)'
         : '✓ "Agent Bridge" cmux workspace already present');
-      // An already-running bridge holds the OLD pairing config until it restarts;
-      // if we just switched to rotating, bounce it so the change applies now (the
-      // in-cmux supervisor relaunches it).
-      if (!r.created && wantRotating) {
+      // An already-running bridge holds the OLD config until it restarts. Bounce
+      // it so config changes apply now (the in-cmux supervisor relaunches it) —
+      // for --rotating OR a changed bind address (else `setup --bind` would
+      // silently not take effect on an existing in-cmux bridge).
+      if (!r.created) {
         const rt = getRuntime();
-        if (rt.pid) {
-          try { process.kill(rt.pid, "SIGTERM"); console.log("• bounced running bridge to apply --rotating"); }
+        const bindChanged = rt.bindAddress && rt.bindAddress !== bindAddress;
+        if ((wantRotating || bindChanged) && rt.pid) {
+          const why = bindChanged ? `new bind address (${bindAddress})` : "--rotating";
+          try { process.kill(rt.pid, "SIGTERM"); console.log(`• bounced running bridge to apply ${why}`); }
           catch { /* will apply on next restart */ }
         }
       }
@@ -181,7 +184,7 @@ export async function run(args = []) {
   if (pairCode) {
     console.log(`  Code:      ${pairCode}   (stays the same — re-show anytime with 'cmux-iphone pair')`);
   } else if (up) {
-    const pc = await api("GET", "/pair-code"); // rotating mode (env/config didn't pin one)
+    const pc = await controlApi("GET", "/pair-code"); // rotating mode (env/config didn't pin one)
     if (pc.ok && pc.json && pc.json.code) console.log(`  Code:      ${pc.json.code}`);
   }
   console.log("\nThen run 'cmux-iphone doctor' if anything looks off.");

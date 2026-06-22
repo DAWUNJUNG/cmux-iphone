@@ -1849,8 +1849,12 @@ async function handleDevicesRevoke(req, res) {
   return jsonResponse(res, removed ? 200 : 404, removed ? { ok: true } : { error: "No device with that id" });
 }
 
-// GET /pair-code — the current pairing code, LOOPBACK-ONLY (for the local
-// cmux-iphone CLI). Not exposed to LAN clients, so it needs no token.
+// GET /pair-code — the current pairing code. Served ONLY on the loopback,
+// secret-gated control listener (the hook port), NEVER on the phone-facing API.
+// This way a DNS-rebinding page (which can pass an allowed Host but has no hook
+// secret) can't read it, and the local CLI reaches it on 127.0.0.1 regardless of
+// the API's bindAddress (e.g. when bound to a Tailscale IP). Defense-in-depth:
+// the loopback remoteAddress check below stays even though the listener is local.
 function handlePairCode(req, res) {
   const remote = req.socket.remoteAddress || "";
   const isLoopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
@@ -2049,14 +2053,18 @@ async function onApiRequest(req, res) {
   } catch {
     return jsonResponse(res, 400, { error: "Bad request" });
   }
-  if (url.pathname.startsWith("/hooks/")) {
+  // /hooks/* and /pair-code are served ONLY on the loopback control listener,
+  // never on the phone-facing API (the latter would expose /pair-code to a
+  // DNS-rebinding page that passes an allowed Host).
+  if (url.pathname.startsWith("/hooks/") || url.pathname === "/pair-code") {
     return jsonResponse(res, 404, { error: "Not found" });
   }
   await dispatch(req, res, `${req.method} ${url.pathname}`);
 }
 
-// Hook listener (127.0.0.1:7861) — local Claude/Codex hooks only, gated by a
-// shared secret header so other local processes can't forge sessions either.
+// Loopback control listener (127.0.0.1:7861) — local Claude/Codex hooks AND
+// local-only control routes (e.g. /pair-code), gated by a shared secret header
+// so other local processes (and rebinding browsers) can't forge or read them.
 async function onHookRequest(req, res) {
   let url;
   try {
@@ -2064,7 +2072,7 @@ async function onHookRequest(req, res) {
   } catch {
     return jsonResponse(res, 400, { error: "Bad request" });
   }
-  if (!url.pathname.startsWith("/hooks/")) {
+  if (!(url.pathname.startsWith("/hooks/") || url.pathname === "/pair-code")) {
     return jsonResponse(res, 404, { error: "Not found" });
   }
   if (!isLocalRequest(req)) {
@@ -2119,6 +2127,11 @@ async function startServer() {
   }
 
   log("info", `Bridge server listening on ${BIND_ADDRESS}:${boundPort}`);
+  if (BIND_ADDRESS === "0.0.0.0" || BIND_ADDRESS === "::") {
+    log("warn", "bindAddress is 0.0.0.0 — the bridge is reachable over PLAINTEXT HTTP by anyone on this network. " +
+      "Since 0.1.1 the secure default is loopback; this is likely a leftover config. " +
+      "Prefer Tailscale (cmux-iphone setup --bind <tailscale-ip>) or set bindAddress to 127.0.0.1.");
+  }
 
   // Record the ACTUALLY-bound port so the CLI (status/doctor/pair) probes the
   // right place even when the configured start port (7860) was busy and we

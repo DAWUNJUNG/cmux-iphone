@@ -232,8 +232,11 @@ cmux-iphone status
 ```bash
 cmux-iphone setup --bind 100.x.y.z     # Tailscale IP — 암호화, 권장
 cmux-iphone setup --lan                # LAN 전체 — 평문, 신뢰할 수 있는 네트워크만
-HOST=100.x.y.z cmux-iphone restart     # 일회성 오버라이드 (또는 config.json의 "bindAddress")
 ```
+
+둘 다 `bindAddress`를 `config.json`에 저장하고 브리지를 재시작합니다. (`HOST` 환경 변수는 직접 띄운
+브리지에만 적용됩니다 — launchd/cmux 관리 서비스는 이를 상속하지 않으므로, 설치된 브리지는
+`setup --bind` 또는 `config.json` 편집을 사용하세요.)
 
 `cmux-iphone status`로 바인딩 주소를 확인하고, 원격 사용 시 Mac이
 잠들지 않게 하세요: `sudo pmset -a sleep 0 && sudo pmset -a disablesleep 1`.

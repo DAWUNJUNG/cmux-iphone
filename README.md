@@ -242,8 +242,11 @@ Pick how to expose it:
 ```bash
 cmux-iphone setup --bind 100.x.y.z     # Tailscale IP — encrypted, recommended
 cmux-iphone setup --lan                # entire LAN — plaintext, trusted networks only
-HOST=100.x.y.z cmux-iphone restart     # one-off override (or set "bindAddress" in config.json)
 ```
+
+Both persist `bindAddress` to `config.json` and restart the bridge. (The `HOST` env
+var only affects a bridge you launch by hand — the managed launchd/cmux service does
+not inherit it, so use `setup --bind` or edit `config.json` for the installed bridge.)
 
 Re-run `cmux-iphone status` to confirm the bound address, and keep the Mac awake for
 remote use:
