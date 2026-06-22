@@ -50,6 +50,18 @@ The bridge binds the LAN; a pairing code + per-device token are the auth boundar
 
 ## Install — the Mac bridge
 
+### Homebrew (recommended)
+
+```bash
+brew install lim-won/tap/cmux-iphone
+cmux-iphone setup
+```
+
+`brew upgrade cmux-iphone` updates it; re-run `cmux-iphone setup` once afterward so
+the LaunchAgent / cmux workspace re-point at the new version.
+
+### From source
+
 ```bash
 git clone https://github.com/lim-won/cmux-iphone && cd cmux-iphone/skill/bridge
 npm ci                        # reproducible install (use `npm install` if no lockfile)
