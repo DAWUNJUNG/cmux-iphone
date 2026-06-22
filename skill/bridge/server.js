@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import crypto from "node:crypto";
 import os from "node:os";
 import fs from "node:fs";
@@ -112,9 +113,11 @@ try {
 let pairingCode = null;
 let pairingCodeExpiresAt = 0;
 
-// Rate limiting
-let rateLimitAttempts = 0;
-let rateLimitWindowStart = Date.now();
+// Rate limiting — keyed PER CLIENT IP so one abusive client can't lock every
+// legitimate device out of pairing. Bounded in size to cap memory.
+/** @type {Map<string, {count: number, windowStart: number}>} */
+const rateLimits = new Map();
+const RATE_LIMIT_MAX_IPS = 1024;
 
 // Bridge-level state: "idle" | "connected"
 let bridgeState = "idle";
@@ -168,7 +171,9 @@ function generatePairingCode() {
   const code = FIXED_PAIRING_CODE || crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
   pairingCode = code;
   pairingCodeExpiresAt = FIXED_PAIRING_CODE ? Number.MAX_SAFE_INTEGER : Date.now() + PAIRING_CODE_TTL_MS;
-  log("info", `Pairing code generated: ${code}${FIXED_PAIRING_CODE ? " (fixed)" : ""}`);
+  // Never log the code itself — this stream is persisted to a plaintext log file
+  // under launchd. Retrieve it via the loopback-only CLI (`cmux-iphone pair`).
+  log("info", `Pairing code generated (${FIXED_PAIRING_CODE ? "fixed" : "rotating"})`);
   return code;
 }
 
@@ -215,22 +220,31 @@ function loadPersistedToken() {
   }
 }
 
-function isRateLimited() {
-  const now = Date.now();
-  if (now - rateLimitWindowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitAttempts = 0;
-    rateLimitWindowStart = now;
-  }
-  return rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS;
+function clientIp(req) {
+  return req.socket?.remoteAddress || "unknown";
 }
 
-function recordRateLimitAttempt() {
+function isRateLimited(req) {
   const now = Date.now();
-  if (now - rateLimitWindowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitAttempts = 0;
-    rateLimitWindowStart = now;
+  const e = rateLimits.get(clientIp(req));
+  if (!e || now - e.windowStart > RATE_LIMIT_WINDOW_MS) return false;
+  return e.count >= RATE_LIMIT_MAX_ATTEMPTS;
+}
+
+function recordRateLimitAttempt(req) {
+  const now = Date.now();
+  const ip = clientIp(req);
+  let e = rateLimits.get(ip);
+  if (!e || now - e.windowStart > RATE_LIMIT_WINDOW_MS) {
+    e = { count: 0, windowStart: now };
+    rateLimits.set(ip, e);
   }
-  rateLimitAttempts++;
+  e.count++;
+  // Bound memory: evict the oldest-tracked IP once the table gets large.
+  if (rateLimits.size > RATE_LIMIT_MAX_IPS) {
+    const oldest = rateLimits.keys().next().value;
+    if (oldest !== undefined) rateLimits.delete(oldest);
+  }
 }
 
 function requireAuth(req) {
@@ -1075,7 +1089,7 @@ async function handlePair(req, res) {
     return jsonResponse(res, 405, { error: "Method not allowed" });
   }
 
-  if (isRateLimited()) {
+  if (isRateLimited(req)) {
     return jsonResponse(res, 429, { error: "Too many pairing attempts. Try again later." });
   }
 
@@ -1086,7 +1100,7 @@ async function handlePair(req, res) {
     return jsonResponse(res, 400, { error: "Invalid JSON" });
   }
 
-  recordRateLimitAttempt();
+  recordRateLimitAttempt(req);
 
   const { code, deviceName, deviceId } = body;
   if (!code || typeof code !== "string") {
@@ -1192,7 +1206,7 @@ async function handleCommand(req, res) {
 
     try {
       await cmux.sendInput(body.terminalId, promptText, body.submit !== false);
-      log("info", `cmux mobile input -> terminal ${String(body.terminalId).slice(0, 8)}: "${promptText.slice(0, 80)}"`);
+      log("info", `cmux mobile input -> terminal ${String(body.terminalId).slice(0, 8)} (${promptText.length} chars)`);
       // Re-read so the caller can confirm the approval prompt was consumed.
       const afterHash = body.expectedScreenHash ? await cmux.screenHash(body.terminalId) : undefined;
       return jsonResponse(res, 200, { ok: true, terminalId: body.terminalId, via: "cmux-mobile", afterHash });
@@ -1288,7 +1302,7 @@ async function handleCommand(req, res) {
           if (terminalId) {
             try {
               await cmux.sendInput(terminalId, promptText, true);
-              log("info", `cmux input -> terminal ${terminalId.slice(0, 8)} (${targetSession.cwd}): "${promptText.slice(0, 80)}"`);
+              log("info", `cmux input -> terminal ${terminalId.slice(0, 8)} (${targetSession.cwd}) (${promptText.length} chars)`);
               pushSseEvent("pty-output", { text: `> ${promptText}` }, sessionId);
               return jsonResponse(res, 200, { ok: true, sessionId, agent: targetSession.agent, via: "cmux", terminalId });
             } catch (err) {
@@ -1308,7 +1322,7 @@ async function handleCommand(req, res) {
           ? ["exec", promptText]
           : ["-p", promptText, "--continue"];
 
-        log("info", `Running ${targetSession.agent} prompt in ${targetSession.cwd}: "${promptText.slice(0, 80)}"`);
+        log("info", `Running ${targetSession.agent} prompt in ${targetSession.cwd} (${promptText.length} chars)`);
 
         targetSession.state = "running";
         pushSseEvent("session", { state: "running", agent: targetSession.agent, cwd: targetSession.cwd, folderName: targetSession.folderName }, sessionId);
@@ -1587,7 +1601,7 @@ async function handleHookPermission(req, res) {
     if (questions && questions.length > 0 && questions[0]?.question) {
       const answers = { [questions[0].question]: decision.selectedOption };
       hookResponse.hookSpecificOutput.decision.updatedInput = { questions, answers };
-      log("info", `AskUserQuestion answer forwarded: "${decision.selectedOption}"`);
+      log("info", `AskUserQuestion answer forwarded`);
     }
   }
 
@@ -1975,6 +1989,37 @@ function isLocalRequest(req) {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
+// --- DNS-rebinding defense -------------------------------------------------
+// A browser-driven DNS-rebinding attack reaches the bridge over a socket to a
+// local IP, yet the Host header still carries the ATTACKER'S domain (the browser
+// preserves the original hostname). Legitimate clients reach the bridge by IP
+// literal (Bonjour / manual entry), by "localhost", or by an mDNS / Tailscale
+// name (*.local / *.ts.net). So accept only those and reject any other host —
+// blocking foreign domains before they can read /pair-code or drive /command.
+function hostnameFromHeader(hostHeader) {
+  if (typeof hostHeader !== "string") return null;
+  let h = hostHeader.trim();
+  if (!h) return null;
+  if (h.startsWith("[")) {                 // [::1]:7860 -> ::1  (bracketed IPv6)
+    const end = h.indexOf("]");
+    return end === -1 ? null : h.slice(1, end);
+  }
+  // Strip a trailing :port only when there's a single colon (a bare IPv6 literal
+  // like "::1" has several and must be left intact for net.isIP).
+  if (h.indexOf(":") !== -1 && h.indexOf(":") === h.lastIndexOf(":")) {
+    h = h.slice(0, h.indexOf(":"));
+  }
+  return h || null;
+}
+
+function isHostAllowed(req) {
+  const name = hostnameFromHeader(req.headers.host);
+  if (!name) return false;                 // missing / malformed Host
+  if (net.isIP(name)) return true;         // reached us by IP literal
+  const lower = name.toLowerCase();
+  return lower === "localhost" || lower.endsWith(".local") || lower.endsWith(".ts.net");
+}
+
 async function dispatch(req, res, routeKey) {
   const handler = routes[routeKey];
   if (!handler) return jsonResponse(res, 404, { error: "Not found" });
@@ -1988,10 +2033,22 @@ async function dispatch(req, res, routeKey) {
   }
 }
 
-// Phone-facing listener (0.0.0.0:7860, reachable over Tailscale) — serves the
-// app API only; never exposes hook endpoints.
+// Phone-facing listener (binds 127.0.0.1 by default; opt into LAN/Tailscale via
+// bindAddress/HOST) — serves the app API only; never exposes hook endpoints.
 async function onApiRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // Reject a foreign Host header (DNS-rebinding defense) before doing anything.
+  if (!isHostAllowed(req)) {
+    return jsonResponse(res, 403, { error: "Forbidden" });
+  }
+  let url;
+  try {
+    // A malformed Host header makes new URL() throw; an uncaught throw here would
+    // crash the whole bridge (unhandled rejection) — i.e. unauthenticated remote
+    // DoS. Parse defensively and answer 400 instead.
+    url = new URL(req.url, `http://${req.headers.host}`);
+  } catch {
+    return jsonResponse(res, 400, { error: "Bad request" });
+  }
   if (url.pathname.startsWith("/hooks/")) {
     return jsonResponse(res, 404, { error: "Not found" });
   }
@@ -2001,7 +2058,12 @@ async function onApiRequest(req, res) {
 // Hook listener (127.0.0.1:7861) — local Claude/Codex hooks only, gated by a
 // shared secret header so other local processes can't forge sessions either.
 async function onHookRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host}`);
+  } catch {
+    return jsonResponse(res, 400, { error: "Bad request" });
+  }
   if (!url.pathname.startsWith("/hooks/")) {
     return jsonResponse(res, 404, { error: "Not found" });
   }
@@ -2120,11 +2182,15 @@ async function startServer() {
   }
 
   const agentLine = agents.length ? agents.join(" + ") : "none";
+  // Only print the actual code to an interactive terminal. Under launchd this
+  // stream is a plaintext log file, so there we show a retrieval hint instead of
+  // persisting the code (read it via the loopback CLI: `cmux-iphone pair`).
+  const codeLine = process.stdout.isTTY ? code : "run: cmux-iphone pair";
   console.log("");
   console.log("╔═══════════════════════════════════════╗");
   console.log("║        AGENT IPHONE BRIDGE             ║");
   console.log("╠═══════════════════════════════════════╣");
-  console.log(`║  Pairing Code:  ${code}                ║`);
+  console.log(`║  Pairing Code:  ${codeLine.padEnd(20)}║`);
   console.log(`║  IP Address:    ${lanIP.padEnd(20)}║`);
   console.log(`║  Port:          ${String(boundPort).padEnd(20)}║`);
   console.log(`║  Agents:        ${agentLine.padEnd(20)}║`);
@@ -2190,6 +2256,16 @@ async function startServer() {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
+// Last-resort safety net: a single malformed request must never take the bridge
+// down. Log and keep serving instead of letting Node's default crash-on-throw
+// turn any unhandled error into an unauthenticated remote DoS.
+process.on("uncaughtException", (err) => {
+  log("error", `Uncaught exception (continuing): ${err?.stack || err?.message || err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  log("error", `Unhandled rejection (continuing): ${reason?.stack || reason?.message || reason}`);
+});
 
 startServer().catch((err) => {
   log("error", "Failed to start server:", err.message);

@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/5f478c28-2086-4696-9d76-e43dda853201
   sessions/terminal output, and answers permission prompts.
 
 Everything runs **on your own machines** — no cloud, no account, no server to host.
-The bridge binds the LAN; a pairing code + per-device token are the auth boundary.
+The bridge is loopback-only by default (expose it over Tailscale/LAN explicitly); a pairing code + per-device token are the auth boundary.
 **Run it over Tailscale or a trusted LAN — it is not built to face the open internet**
 (see [`SECURITY.md`](SECURITY.md)).
 
@@ -234,16 +234,19 @@ by hand: in the app tap **Enter IP manually**, type the `100.x.y.z` (or MagicDNS
 hostname) + your pairing code (`cmux-iphone pair`). The same pairing then works on
 Wi-Fi, cellular, or anywhere your tailnet reaches — no re-pairing.
 
-**4. (Recommended) Bind to Tailscale only.** By default the bridge listens on every
-interface (`0.0.0.0`), including your LAN. To accept connections **only** over
-Tailscale, pin the listener to your tailnet IP:
+**4. Exposing the bridge (it is loopback-only by default).** For safety the bridge
+binds `127.0.0.1` out of the box, so a fresh install is never reachable over
+plaintext HTTP by anyone else on your network — and your phone can't reach it yet.
+Pick how to expose it:
 
 ```bash
-HOST=100.x.y.z cmux-iphone restart     # or set "bindAddress" in config.json
+cmux-iphone setup --bind 100.x.y.z     # Tailscale IP — encrypted, recommended
+cmux-iphone setup --lan                # entire LAN — plaintext, trusted networks only
+HOST=100.x.y.z cmux-iphone restart     # one-off override (or set "bindAddress" in config.json)
 ```
 
-Use `127.0.0.1` for loopback-only. Re-run `cmux-iphone status` to confirm the bound
-address, and keep the Mac awake for remote use:
+Re-run `cmux-iphone status` to confirm the bound address, and keep the Mac awake for
+remote use:
 `sudo pmset -a sleep 0 && sudo pmset -a disablesleep 1`.
 
 > **Multiple Macs on the road?** See [`REMOTE-SETUP.md`](REMOTE-SETUP.md) for naming
@@ -292,9 +295,11 @@ Hooks installed (loopback listener, secret-gated): `PostToolUse`, `PreToolUse`,
 
 ## Security
 
-By default the bridge listens on `0.0.0.0:<port>` (LAN-reachable); set `bindAddress`
-(or the `HOST` env) to restrict it to a Tailscale/loopback interface. Auth is the
-pairing code + per-device token; the hook listener is loopback-only and secret-gated.
+By default the bridge listens on `127.0.0.1:<port>` (loopback-only); exposing it to
+your phone is an explicit opt-in via `bindAddress` / the `HOST` env / `setup --lan`
+(prefer a Tailscale IP — encrypted). Requests carrying a foreign `Host` header are
+rejected (DNS-rebinding defense). Auth is the pairing code + per-device token; the
+hook listener is loopback-only and secret-gated.
 Secrets live outside the repo at `0600`. Trusted LAN or Tailscale use is recommended —
 do not expose the bridge directly to the public internet. Full model + reporting in
 [`SECURITY.md`](SECURITY.md).

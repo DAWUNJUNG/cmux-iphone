@@ -52,6 +52,13 @@ PATH_ENTRIES="$(dirname "$NODE_BIN"):/usr/local/bin:/opt/homebrew/bin:${HOME}/.n
 [ -n "$CMUX_BIN" ] && PATH_ENTRIES="$(dirname "$CMUX_BIN"):${PATH_ENTRIES}"
 
 mkdir -p "$LOG_DIR" "$(dirname "$PLIST")"
+# Logs can contain operational detail — keep them owner-only. Pre-create the
+# files 0600 so launchd appends to them instead of creating world-readable ones.
+chmod 700 "$LOG_DIR"
+for f in "$LOG_DIR/bridge.out.log" "$LOG_DIR/bridge.err.log"; do
+  [ -e "$f" ] || : > "$f"
+  chmod 600 "$f"
+done
 
 # --- Write the plist ---
 cat > "$PLIST" <<PLIST_EOF
@@ -98,8 +105,8 @@ echo "  node:   ${NODE_BIN}"
 echo "  cmux:   ${CMUX_BIN:-<none>}"
 echo "  logs:   ${LOG_DIR}/bridge.out.log"
 echo ""
-echo "Pairing code is printed in the log — read it with:"
-echo "  grep -A4 'AGENT IPHONE BRIDGE' '${LOG_DIR}/bridge.out.log' | tail -6"
+echo "Get the pairing code (read over loopback, never written to the log):"
+echo "  cmux-iphone pair"
 echo ""
 echo "Reminders:"
 echo "  • Keep awake:  sudo pmset -a sleep 0 && sudo pmset -a disablesleep 1"

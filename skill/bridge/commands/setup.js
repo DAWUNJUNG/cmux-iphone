@@ -71,6 +71,32 @@ export async function run(args = []) {
 
   // 3) Persist config (merge, never clobber)
   saveConfig({ runner, cmux: { ...cfg.cmux, enabled: runner === "cmux" } });
+
+  // 3a) Bind interface. SECURE DEFAULT is loopback (127.0.0.1): a fresh install
+  // is never reachable over plaintext HTTP by the rest of the LAN. Exposing the
+  // bridge to your phone is an explicit choice:
+  //   HOST=<addr>     env override (highest priority)
+  //   --bind <addr>   pin a specific interface (e.g. a Tailscale 100.x IP)
+  //   --lan           bind 0.0.0.0 — the whole LAN, PLAINTEXT (eavesdrop risk)
+  //   (default)       keep any prior choice in config.json, else loopback
+  const bindIdx = args.indexOf("--bind");
+  let bindAddress;
+  if (process.env.HOST) bindAddress = process.env.HOST;
+  else if (bindIdx !== -1 && args[bindIdx + 1]) bindAddress = args[bindIdx + 1];
+  else if (args.includes("--lan")) bindAddress = "0.0.0.0";
+  else bindAddress = cfg.bindAddress || "127.0.0.1";
+  saveConfig({ bindAddress });
+  const localOnly = bindAddress === "127.0.0.1" || bindAddress === "::1";
+  const wholeLan = bindAddress === "0.0.0.0" || bindAddress === "::";
+  if (localOnly) {
+    console.log("• bind: 127.0.0.1 (LOCAL-ONLY, secure default) — your phone can't reach it yet.");
+    console.log("        Expose it over Tailscale (encrypted, recommended):  cmux-iphone setup --bind <tailscale-ip>");
+    console.log("        …or your LAN (plaintext, trusted networks only):     cmux-iphone setup --lan");
+  } else if (wholeLan) {
+    console.log("• bind: 0.0.0.0 (entire LAN, PLAINTEXT) — prefer Tailscale on untrusted networks.");
+  } else {
+    console.log(`• bind: ${bindAddress}`);
+  }
   // Pairing. DEFAULT is a STABLE per-machine code so non-developers never have to
   // chase a rotating one: random 6-digit, stored 0600 (not in the repo), retrievable
   // anytime with `cmux-iphone pair`; the CMUX_IPHONE_PAIR_CODE env var overrides;
@@ -138,12 +164,20 @@ export async function run(args = []) {
     return 1;
   }
 
-  // 8) Pair info
+  // 8) Pair info — show ONLY addresses that actually reach the bound interface,
+  // so a loopback-only bridge never advertises a LAN/Tailscale URL that refuses.
   console.log("\nPair your iPhone:");
   const lan = lanIPv4();
   const ts = tailscaleIPv4();
-  if (lan) console.log(`  LAN:       http://${lan}:${apiPort}`);
-  if (ts) console.log(`  Tailscale: http://${ts}:${apiPort}`);
+  if (localOnly) {
+    console.log("  Bridge is LOCAL-ONLY (127.0.0.1) — not reachable from your phone yet.");
+    console.log("  Expose it first (see the 'bind:' note above), then re-run setup.");
+  } else if (wholeLan) {
+    if (ts) console.log(`  Tailscale: http://${ts}:${apiPort}   (encrypted — preferred)`);
+    if (lan) console.log(`  LAN:       http://${lan}:${apiPort}   (plaintext)`);
+  } else {
+    console.log(`  Bridge:    http://${bindAddress}:${apiPort}`);
+  }
   if (pairCode) {
     console.log(`  Code:      ${pairCode}   (stays the same — re-show anytime with 'cmux-iphone pair')`);
   } else if (up) {

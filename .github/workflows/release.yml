@@ -26,9 +26,12 @@ jobs:
       # the token itself is injected solely into the Homebrew bump step below.
       HAS_TAP_TOKEN: ${{ secrets.COMMITTER_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to a full commit SHA (not a movable tag) so
+      # a hijacked/retagged release can't inject code into this token-bearing job.
+      # Trailing comment tracks the human-readable version for upgrades.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
@@ -50,7 +53,7 @@ jobs:
           echo "sha256:"; shasum -a 256 "cmux-iphone-${V}.tar.gz"
 
       - name: Attach tarball to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: cmux-iphone-*.tar.gz
 
@@ -58,7 +61,7 @@ jobs:
         # Skips cleanly when the tap PAT isn't configured (first release / forks).
         # Set the COMMITTER_TOKEN secret to enable automatic formula bumps.
         if: ${{ env.HAS_TAP_TOKEN == 'true' }}
-        uses: mislav/bump-homebrew-formula-action@v3
+        uses: mislav/bump-homebrew-formula-action@56a283fa15557e9abaa4bdb63b8212abc68e655c # v3.6
         with:
           formula-name: cmux-iphone
           homebrew-tap: ${{ github.repository_owner }}/homebrew-tap

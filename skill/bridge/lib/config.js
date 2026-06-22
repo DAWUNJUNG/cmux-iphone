@@ -32,10 +32,13 @@ export const paths = {
 const DEFAULTS = {
   version: 1,
   ports: { apiPort: 7860, apiPortRangeEnd: 7869, hookPort: 7861 },
-  // Interface the phone-facing listener binds to. "0.0.0.0" = every interface
-  // (LAN + Tailscale). Set to a Tailscale IP (e.g. "100.x.y.z") or "127.0.0.1"
-  // to restrict who can reach the bridge. Env HOST overrides at runtime.
-  bindAddress: "0.0.0.0",
+  // Interface the phone-facing listener binds to. SECURE DEFAULT: "127.0.0.1"
+  // (loopback only) so a fresh install is never reachable over plaintext HTTP by
+  // anyone else on the LAN. Exposing the bridge to your phone is an explicit
+  // opt-in — set this to a Tailscale IP (e.g. "100.x.y.z", encrypted; preferred)
+  // or to "0.0.0.0" for the whole LAN (plaintext — same-network eavesdropping
+  // risk). Env HOST overrides at runtime; `cmux-iphone setup` writes the choice.
+  bindAddress: "127.0.0.1",
   cmux: { enabled: null, bin: null }, // enabled:null = auto-detect at runtime
   // Pairing. `fixedCode` is the SINGLE source of truth the server reads:
   //   set   → FIXED per-machine code (default; persisted by `setup`, rate-limited)

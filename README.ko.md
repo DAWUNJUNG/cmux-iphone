@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/5f478c28-2086-4696-9d76-e43dda853201
   프롬프트에 응답하는 SwiftUI 앱.
 
 모든 것이 **당신의 기기 안에서만** 동작합니다 — 클라우드도, 계정도, 호스팅할 서버도 없습니다.
-브리지는 LAN에 바인딩되며, 페어링 코드 + 기기별 토큰이 인증 경계입니다.
+브리지는 기본적으로 loopback(127.0.0.1)에만 바인딩되며(폰 접근은 Tailscale/LAN으로 명시적 opt-in), 페어링 코드 + 기기별 토큰이 인증 경계입니다.
 **Tailscale 또는 신뢰할 수 있는 LAN에서 사용하세요 — 공개 인터넷에 노출하도록 만들어지지 않았습니다**
 ([`SECURITY.md`](SECURITY.md) 참고).
 
@@ -225,14 +225,17 @@ cmux-iphone status
 `100.x.y.z`(또는 MagicDNS 호스트네임)와 페어링 코드(`cmux-iphone pair`)를 입력하세요. 한 번
 페어링하면 Wi-Fi·셀룰러 등 테일넷이 닿는 어디서나 동작합니다 — 재페어링 불필요.
 
-**4. (권장) Tailscale 전용 바인딩.** 기본적으로 브리지는 LAN을 포함한 모든 인터페이스(`0.0.0.0`)에서
-수신합니다. **Tailscale로만** 연결을 받으려면 테일넷 IP로 리스너를 고정하세요:
+**4. 브리지 노출하기 (기본은 loopback 전용).** 안전을 위해 브리지는 기본적으로 `127.0.0.1`에만
+바인딩됩니다 — 새로 설치한 상태에서는 네트워크의 다른 누구도 평문 HTTP로 접근할 수 없고, 폰도 아직
+접근하지 못합니다. 노출 방법을 선택하세요:
 
 ```bash
-HOST=100.x.y.z cmux-iphone restart     # 또는 config.json의 "bindAddress" 설정
+cmux-iphone setup --bind 100.x.y.z     # Tailscale IP — 암호화, 권장
+cmux-iphone setup --lan                # LAN 전체 — 평문, 신뢰할 수 있는 네트워크만
+HOST=100.x.y.z cmux-iphone restart     # 일회성 오버라이드 (또는 config.json의 "bindAddress")
 ```
 
-loopback 전용은 `127.0.0.1`. `cmux-iphone status`로 바인딩 주소를 확인하고, 원격 사용 시 Mac이
+`cmux-iphone status`로 바인딩 주소를 확인하고, 원격 사용 시 Mac이
 잠들지 않게 하세요: `sudo pmset -a sleep 0 && sudo pmset -a disablesleep 1`.
 
 > **여러 Mac을 이동 중 쓰려면** [`REMOTE-SETUP.md`](REMOTE-SETUP.md)에서 각 Mac 이름 지정
@@ -279,8 +282,9 @@ Claude가 권한 프롬프트에 도달 → `PermissionRequest` 훅이 **블록*
 
 ## 보안
 
-브리지는 **기본적으로** `0.0.0.0:<port>`(LAN 도달 가능)에서 수신합니다. `bindAddress`(또는 `HOST`
-환경 변수)로 Tailscale/loopback 인터페이스로 제한할 수 있습니다. 인증은 페어링 코드 + 기기별
+브리지는 **기본적으로** `127.0.0.1:<port>`(loopback 전용)에서 수신합니다. 폰에 노출하는 것은
+`bindAddress`/`HOST` 환경 변수/`setup --lan`을 통한 명시적 opt-in입니다(암호화되는 Tailscale IP 권장).
+외부 도메인 `Host` 헤더를 가진 요청은 거부됩니다(DNS 리바인딩 방어). 인증은 페어링 코드 + 기기별
 토큰이며, 훅 리스너는 루프백 전용에 시크릿 게이트가 걸립니다. 시크릿은 저장소 밖에 `0600`으로
 보관됩니다. 신뢰할 수 있는 LAN 또는 Tailscale 사용을 권장하며, 브리지를 공개 인터넷에 직접
 노출하지 마세요. 전체 모델 + 신고 방법은 [`SECURITY.md`](SECURITY.md)에 있습니다.

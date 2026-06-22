@@ -4,14 +4,20 @@
 
 Cmux iPhone is a **personal, local-network tool**, not an internet-facing service.
 
-- The **bridge** listens on `0.0.0.0:<apiPort>` (default 7860) so the phone/watch
-  can reach it over the LAN or a Tailnet. Anyone who can reach that port can
-  attempt to pair.
+- The **bridge** listens on `127.0.0.1:<apiPort>` (default 7860) by default —
+  **loopback-only**, so a fresh install is never reachable over plaintext HTTP by
+  the rest of the network. Reaching it from the phone/watch is an explicit opt-in
+  (`cmux-iphone setup --bind <tailscale-ip>` / `--lan`, the `bindAddress` config, or
+  the `HOST` env). Anyone who can reach the exposed port can attempt to pair.
+- **DNS-rebinding defense:** requests whose `Host` header is a foreign domain (not
+  an IP literal, `localhost`, `*.local`, or `*.ts.net`) are rejected `403`, so a
+  malicious web page can't drive the bridge through the victim's browser.
 - **Auth boundary:** a **6-digit pairing code** establishes a **per-device bearer
   token**. By default `cmux-iphone setup` generates a **fixed, random per-machine
   code once**, stores it `0600`, and does **not** rotate it (always retrievable via
   `cmux-iphone pair`). The bridge **rate-limits pairing to 5 attempts per 5-minute
-  window**, so a fixed code resists online brute force. A **rotating** mode (a fresh
+  window, per client IP** (so one abusive client can't lock everyone else out), and
+  a fixed code resists online brute force. A **rotating** mode (a fresh
   6-digit code with a 24h TTL, regenerated on restart and cleared after a device
   pairs) is **opt-in** — used only when no fixed code is set (`cmux-iphone setup
   --rotating`, or unset `pairing.fixedCode`). Every authenticated request
@@ -24,10 +30,10 @@ Cmux iPhone is a **personal, local-network tool**, not an internet-facing servic
   everything else require a token.
 - **iOS/watchOS bearer tokens** are stored in the **Keychain** (this-device-only),
   not in `UserDefaults`.
-- **LAN traffic is unencrypted** — the phone-facing API is **plaintext HTTP** on
-  `0.0.0.0:<apiPort>`. Prefer **Tailscale** (or a trusted LAN) and never
-  port-forward to the public internet. The opt-in `bindAddress` config (or `HOST`
-  env) restricts the listener to a Tailscale/loopback interface.
+- **LAN traffic is unencrypted** — once exposed beyond loopback, the phone-facing
+  API is **plaintext HTTP**. Prefer **Tailscale** (encrypted) over a plaintext LAN
+  bind (`--lan` / `0.0.0.0`), and never port-forward to the public internet. The
+  `bindAddress` config (or `HOST` env) pins the listener to a chosen interface.
 
 ### Recommendations
 

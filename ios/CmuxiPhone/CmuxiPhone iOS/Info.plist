@@ -22,8 +22,24 @@
 	<string>1</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<!-- The bridge speaks plaintext HTTP on the LOCAL network (Bonjour-resolved
+		     LAN IPs and localhost). Scope the cleartext exemption to local
+		     networking instead of NSAllowsArbitraryLoads, which would disable ATS
+		     for the entire public internet. Tailscale MagicDNS (*.ts.net) is
+		     allowed explicitly; reach a Tailscale host by its MagicDNS name rather
+		     than a raw 100.x IP. -->
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>ts.net</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
 	</dict>
 	<key>NSBonjourServices</key>
 	<array>
