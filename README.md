@@ -51,7 +51,7 @@ The bridge binds the LAN; a pairing code + per-device token are the auth boundar
 ## Install — the Mac bridge
 
 ```bash
-git clone https://github.com/limseungwon/cmux-iphone && cd cmux-iphone/skill/bridge
+git clone https://github.com/lim-won/cmux-iphone && cd cmux-iphone/skill/bridge
 npm ci                        # reproducible install (use `npm install` if no lockfile)
 npm link                      # optional: puts `cmux-iphone` on your PATH
 cmux-iphone setup             # or: node bin/cmux-iphone.js setup

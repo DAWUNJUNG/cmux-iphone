@@ -23,4 +23,4 @@ Initial public release.
 - **CLI**: `setup`, `status`, `doctor`, `pair`, `restart`, `uninstall`, `logs`.
 - **Packaging**: Homebrew formula + tap, and a vendored release tarball.
 
-[0.1.0]: https://github.com/limseungwon/cmux-iphone/releases
+[0.1.0]: https://github.com/lim-won/cmux-iphone/releases

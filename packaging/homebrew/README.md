@@ -1,15 +1,15 @@
 # Homebrew distribution (one-time setup)
 
-Goal: `brew install limseungwon/tap/cmux-iphone && cmux-iphone setup`.
+Goal: `brew install lim-won/tap/cmux-iphone && cmux-iphone setup`.
 
 The bridge is a pure-JS Node CLI (one dependency, `bonjour-service`), so the
 release tarball vendors `node_modules` — no per-machine compile. The tap owner
-here is the `limseungwon` GitHub account.
+here is the `lim-won` GitHub account.
 
 ## 1. Create the tap repo
 
 Create a public repo named **`homebrew-tap`** under your account (the
-`homebrew-` prefix is what makes `limseungwon/tap` work). Add the formula:
+`homebrew-` prefix is what makes `lim-won/tap` work). Add the formula:
 
 ```
 homebrew-tap/
@@ -18,7 +18,7 @@ homebrew-tap/
 ```
 
 Edit `cmux-iphone.rb`: the `homepage` and `url` already point at the
-`limseungwon` account. Leave `sha256` as the placeholder for now (the first real
+`lim-won` account. Leave `sha256` as the placeholder for now (the first real
 release fills it).
 
 ## 2. Add the bump token
@@ -43,7 +43,7 @@ On publish, the workflow:
 1. builds `cmux-iphone-0.1.0.tar.gz` (the `bridge/` + `setup.sh` + `setup-hooks.sh`
    with vendored prod deps),
 2. attaches it to the release,
-3. rewrites `url` + `sha256` in `limseungwon/homebrew-tap/Formula/cmux-iphone.rb`.
+3. rewrites `url` + `sha256` in `lim-won/homebrew-tap/Formula/cmux-iphone.rb`.
 
 For the **first** release, the formula's placeholder `sha256` is wrong until the
 bump runs — if `brew install` is attempted before the first successful bump,
@@ -52,7 +52,7 @@ fill the sha by hand once: `shasum -a 256 cmux-iphone-0.1.0.tar.gz`.
 ## 4. Install
 
 ```bash
-brew install limseungwon/tap/cmux-iphone
+brew install lim-won/tap/cmux-iphone
 cmux-iphone setup
 ```
 

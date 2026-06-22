@@ -1,7 +1,7 @@
 ---
 name: cmux-iphone
 description: Bridge your Claude Code session to the Cmux iPhone app on iPhone and Apple Watch
-author: limseungwon
+author: lim-won
 version: 0.1.0
 ---
 
