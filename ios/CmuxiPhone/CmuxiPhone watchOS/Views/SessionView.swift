@@ -161,6 +161,8 @@ struct SessionView: View {
         case .userPrompt: return Theme.Accent.approval
         case .assistant:  return Theme.Text.primary
         case .tool:       return Theme.Text.secondary
+        case .subagent:   return Theme.Accent.approval
+        case .reasoning:  return Theme.Text.secondary.opacity(0.7)
         }
     }
 }

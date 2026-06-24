@@ -1015,6 +1015,24 @@ final class RelayService: ObservableObject {
                 lines.append(TerminalLine(text: "\(prefix)\(String(output.prefix(100)))", type: .output, sessionId: sessionId))
             }
 
+        case "Task":
+            // A sub-agent the main agent spawned — show its type + task distinctly
+            // so its work isn't confused with the main agent's own actions.
+            let subType = toolInput["subagent_type"] as? String ?? "agent"
+            let desc = toolInput["description"] as? String
+                ?? toolInput["prompt"] as? String
+                ?? ""
+            let header = desc.isEmpty ? "서브에이전트 [\(subType)]" : "서브에이전트 [\(subType)] · \(desc)"
+            lines.append(TerminalLine(text: "\(prefix)\(header)", type: .subagent, sessionId: sessionId))
+            if let output = toolOutput {
+                for raw in output.components(separatedBy: "\n").prefix(8) {
+                    let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleaned.isEmpty {
+                        lines.append(TerminalLine(text: "  \(cleaned)", type: .output, sessionId: sessionId))
+                    }
+                }
+            }
+
         default:
             lines.append(TerminalLine(text: "\(prefix)[\(toolName)]", type: .tool, sessionId: sessionId))
             if let output = toolOutput {
@@ -1063,6 +1081,22 @@ final class RelayService: ObservableObject {
         let json = parseJSON(data)
         let sessionId = json?["sessionId"] as? String
         setThinking(false, sessionId: sessionId)
+
+        // Reasoning first (when extended thinking is on) — shown distinctly above
+        // the answer so the user can tell the AI's thought process from its reply.
+        if let thinking = json?["thinkingText"] as? String,
+           !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let head = TerminalLine(text: "💭 사고 과정", type: .reasoning, sessionId: sessionId)
+            terminalBuffer.append(head)
+            appendToSession(head, sessionId: sessionId)
+            pendingTerminalLines.append(head)
+            for raw in thinking.components(separatedBy: "\n") {
+                let line = TerminalLine(text: raw, type: .reasoning, sessionId: sessionId)
+                terminalBuffer.append(line)
+                appendToSession(line, sessionId: sessionId)
+                pendingTerminalLines.append(line)
+            }
+        }
 
         // Render Claude's final answer. The bridge reads it from the transcript
         // on Stop and forwards it as `assistantText` — this is the only place the

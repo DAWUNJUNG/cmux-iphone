@@ -1535,6 +1535,24 @@ private struct SessionDetailView: View {
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundStyle(Color.mutedText)
             }
+        case .subagent:
+            // A sub-agent the main agent spawned — badged so it's clearly not the
+            // main agent's own action.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.claudeAmber)
+                Text(text)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.claudeAmber)
+            }
+            .padding(.vertical, 2)
+        case .reasoning:
+            // The agent's thinking — de-emphasised (dim + italic) so it reads as
+            // background thought, distinct from the actual answer.
+            Text(text)
+                .font(.system(size: 12).italic())
+                .foregroundStyle(Color.subtleText)
         case .command:
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("●")

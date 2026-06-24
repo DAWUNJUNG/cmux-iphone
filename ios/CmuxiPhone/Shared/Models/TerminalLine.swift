@@ -16,6 +16,8 @@ struct TerminalLine: Identifiable, Codable, Equatable {
         case userPrompt  // What the user typed or said
         case assistant   // The agent's reply text (the actual answer)
         case tool        // A non-shell tool action header (Read/Edit/Write/Grep…)
+        case subagent    // A sub-agent (Task tool) invocation header
+        case reasoning   // The agent's thinking / reasoning (extended thinking)
     }
 
     init(text: String, type: LineType = .output, sessionId: String? = nil) {

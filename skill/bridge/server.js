@@ -1608,20 +1608,23 @@ async function handleHookPermission(req, res) {
   return jsonResponse(res, 200, hookResponse);
 }
 
-// Claude Code hooks never carry the assistant's reply text — it only lives in
-// the session transcript (JSONL). The Stop payload gives us transcript_path, so
-// read it and pull the text of the final assistant turn (the actual answer).
-function extractFinalAssistantText(transcriptPath) {
-  if (!transcriptPath || typeof transcriptPath !== "string") return null;
+// Claude Code hooks never carry the assistant's reply text OR its reasoning —
+// both only live in the session transcript (JSONL). The Stop payload gives us
+// transcript_path, so read it and pull the final assistant turn's text plus (when
+// extended thinking is on) its reasoning blocks.
+function extractFinalAssistantTurn(transcriptPath) {
+  const empty = { text: null, thinking: null };
+  if (!transcriptPath || typeof transcriptPath !== "string") return empty;
   let raw;
   try {
     raw = fs.readFileSync(transcriptPath, "utf8");
   } catch (err) {
     log("warn", `Stop: could not read transcript ${transcriptPath}: ${err.message}`);
-    return null;
+    return empty;
   }
   const lines = raw.split("\n");
-  // Walk backwards to the most recent assistant message that has text content.
+  // Walk backwards to the most recent assistant message that has text content,
+  // and read the reasoning from that same turn entry.
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -1634,6 +1637,7 @@ function extractFinalAssistantText(transcriptPath) {
     if (entry.type !== "assistant") continue;
     const content = entry.message?.content;
     let text = "";
+    let thinking = "";
     if (typeof content === "string") {
       text = content;
     } else if (Array.isArray(content)) {
@@ -1641,11 +1645,15 @@ function extractFinalAssistantText(transcriptPath) {
         .filter((b) => b && b.type === "text" && typeof b.text === "string")
         .map((b) => b.text)
         .join("\n");
+      thinking = content
+        .filter((b) => b && b.type === "thinking" && typeof b.thinking === "string")
+        .map((b) => b.thinking)
+        .join("\n");
     }
     text = text.trim();
-    if (text) return text;
+    if (text) return { text, thinking: thinking.trim() || null };
   }
-  return null;
+  return empty;
 }
 
 async function handleHookStop(req, res) {
@@ -1660,13 +1668,18 @@ async function handleHookStop(req, res) {
   const sid = resolveHookSession(body);
   log("info", `Hook: Stop received${sid ? ` session=${sid}` : ""}`);
 
-  // Attach the final answer text on a real Stop (skip Codex and Notification
-  // pings, which would otherwise re-send the same text and create duplicates).
+  // Attach the final answer text (+ reasoning) on a real Stop (skip Codex and
+  // Notification pings, which would otherwise re-send the same text and dupe).
   if (body.source !== "codex" && body.hook_event_name !== "Notification" && body.transcript_path) {
-    const assistantText = extractFinalAssistantText(body.transcript_path);
-    if (assistantText) {
-      body.assistantText = assistantText;
-      log("info", `Stop: forwarded final answer (${assistantText.length} chars)`);
+    const { text, thinking } = extractFinalAssistantTurn(body.transcript_path);
+    if (text) {
+      body.assistantText = text;
+      log("info", `Stop: forwarded final answer (${text.length} chars)`);
+    }
+    if (thinking) {
+      // Cap the reasoning so a long thinking block doesn't bloat the SSE payload.
+      body.thinkingText = thinking.length > 6000 ? thinking.slice(0, 6000) + "\n…" : thinking;
+      log("info", `Stop: forwarded reasoning (${thinking.length} chars)`);
     }
   }
 
