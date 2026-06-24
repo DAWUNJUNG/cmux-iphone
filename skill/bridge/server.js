@@ -75,6 +75,10 @@ const BIND_ADDRESS = process.env.HOST || CONFIG.bindAddress || "0.0.0.0";
 // in-app local notification needs a live connection). Off unless a topic is set.
 const NTFY_SERVER = (process.env.CW_NTFY_SERVER || CONFIG.ntfy?.server || "https://ntfy.sh").replace(/\/+$/, "");
 const NTFY_TOPIC = process.env.CW_NTFY_TOPIC || CONFIG.ntfy?.topic || null;
+// Also push on turn completion (not just approvals). Default on; CW_NTFY_ON_COMPLETE=false to mute.
+const NTFY_ON_COMPLETE = process.env.CW_NTFY_ON_COMPLETE
+  ? process.env.CW_NTFY_ON_COMPLETE !== "false"
+  : CONFIG.ntfy?.notifyOnComplete !== false;
 const PAIRING_CODE_TTL_MS = CONFIG.pairing?.ttlMs ?? 24 * 60 * 60 * 1000; // rotating-mode TTL
 // Pairing default is FIXED (per-machine random 6-digit, persisted by
 // `cmux-iphone setup`, never rotates, rate-limited 5/5min). A FIXED code is
@@ -1813,6 +1817,16 @@ async function handleHookStop(req, res) {
   }
 
   pushSseEvent("stop", body, sid);
+
+  // The wired Stop hook is the only "turn finished" signal (the legacy
+  // TaskCompleted hook never fires), so push a completion notification here.
+  if (NTFY_ON_COMPLETE && body.source !== "codex" && body.hook_event_name !== "Notification") {
+    const preview = body.assistantText
+      ? body.assistantText.replace(/\s+/g, " ").trim().slice(0, 200)
+      : "작업이 완료되었습니다.";
+    notifyNtfy("작업 완료 ✅", preview, { priority: 3, tags: ["white_check_mark"], click: ntfyDeepLink(sid) });
+  }
+
   return jsonResponse(res, 200, { ok: true });
 }
 

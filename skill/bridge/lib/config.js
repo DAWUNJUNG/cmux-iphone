@@ -49,7 +49,9 @@ const DEFAULTS = {
   // Optional ntfy push (https://ntfy.sh or self-hosted) so approvals/completions
   // reach the phone even when the app is closed — the local-notification path
   // needs the app connected. Off until a topic is set (config.json or CW_NTFY_TOPIC).
-  ntfy: { server: "https://ntfy.sh", topic: null },
+  // notifyOnComplete: also push when Claude finishes a turn (not just approvals).
+  // Handy when you walk away from a long task; set false if every reply is noisy.
+  ntfy: { server: "https://ntfy.sh", topic: null, notifyOnComplete: true },
 };
 
 function loadRaw() {
