@@ -640,6 +640,27 @@ final class RelayService: ObservableObject {
 
         let reason = toolInput["reason"] as? String ?? (json["reason"] as? String)
         let session = sessionId.flatMap { sid in sessions.first(where: { $0.id == sid && $0.bridgeID == bridgeID }) }
+
+        // AskUserQuestion: capture ALL questions (with multiSelect) so the card can
+        // render checkboxes/radio and answer several at once — not just the first.
+        var askQuestions: [ApprovalRequest.AskQuestion]? = nil
+        if toolName == "AskUserQuestion", let questions = toolInput["questions"] as? [[String: Any]] {
+            let parsed = questions.compactMap { q -> ApprovalRequest.AskQuestion? in
+                guard let qText = q["question"] as? String else { return nil }
+                let opts = (q["options"] as? [[String: Any]] ?? []).map {
+                    ApprovalRequest.OptionItem(label: $0["label"] as? String ?? "",
+                                               description: $0["description"] as? String)
+                }
+                return ApprovalRequest.AskQuestion(
+                    question: qText,
+                    header: q["header"] as? String,
+                    multiSelect: q["multiSelect"] as? Bool ?? false,
+                    options: opts
+                )
+            }
+            askQuestions = parsed.isEmpty ? nil : parsed
+        }
+
         // Live-terminal pin (codex/cmux approvals): the bridge snapshots the
         // terminal + its screen hash so the answer can't land on a wrong/changed screen.
         let terminalId = json["terminalId"] as? String
@@ -657,7 +678,8 @@ final class RelayService: ObservableObject {
             reason: reason,
             terminalId: terminalId,
             expectedScreenHash: expectedHash,
-            bridgeID: bridgeID
+            bridgeID: bridgeID,
+            askQuestions: askQuestions
         )
 
         // Ignore re-sends of an approval we've already answered/cleared.
@@ -710,6 +732,38 @@ final class RelayService: ObservableObject {
     }
 
     // MARK: - Permission response
+
+    /// Answer an AskUserQuestion with a per-question answer map — supports
+    /// multiSelect (answers joined by ", ") and multiple questions at once.
+    func respondWithAnswers(to approval: ApprovalRequest, answers: [String: String]) {
+        let permissionId = approval.permissionId ?? ""
+        if currentStatus(of: approval) == .submitting { return }
+        if !permissionId.isEmpty, resolvedPermissionIds.contains(permissionId) { return }
+
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        setStatus(.submitting, for: approval)
+        let tid = approval.terminalId
+        let hash = approval.expectedScreenHash
+        let api = conn(approval.bridgeID)?.client ?? bridgeClient
+        Task { @MainActor in
+            do {
+                try await api.respondToApprovalWithAnswers(
+                    requestId: permissionId, answers: answers, terminalId: tid, expectedScreenHash: hash)
+                if !permissionId.isEmpty { resolvedPermissionIds.insert(permissionId) }
+                let line = TerminalLine(text: "→ \(answers.values.joined(separator: " · "))", type: .output)
+                terminalBuffer.append(line)
+                recentTerminalLines = terminalBuffer.getLast(15)
+                clearPendingApproval(for: approval)
+            } catch {
+                if case BridgeClient.BridgeError.screenChanged = error, let tid {
+                    await reverifyApproval(approval, terminalId: tid)
+                } else {
+                    setStatus(.failed, for: approval, error: friendlyError(error))
+                }
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
+    }
 
     /// Respond to a SPECIFIC approval with a selected option (queue-aware).
     /// Single-use: a permissionId can only be answered once, even if the card

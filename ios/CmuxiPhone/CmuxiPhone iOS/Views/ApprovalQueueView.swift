@@ -52,7 +52,8 @@ struct ApprovalQueueView: View {
 struct ApprovalCard: View {
     let approval: ApprovalRequest
     @EnvironmentObject private var relayService: RelayService
-    @State private var freeformText = ""
+    @State private var selections: [UUID: Set<String>] = [:]   // questionId → chosen labels
+    @State private var freeform: [UUID: String] = [:]          // questionId → typed text
 
     private var projectName: String {
         if let cwd = approval.cwd, !cwd.isEmpty {
@@ -127,73 +128,46 @@ struct ApprovalCard: View {
                     .truncationMode(.middle)
             }
 
-            // Options — Allow / (Allow this session) / Deny, or AskUserQuestion choices
-            ForEach(Array(approval.options.enumerated()), id: \.element.id) { index, option in
-                let color = colorForOption(index, total: approval.options.count)
-                Button {
-                    relayService.respond(to: approval, optionLabel: option.label, index: index)
-                } label: {
-                    HStack(spacing: 8) {
-                        Text("\(index + 1).")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(color)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.label)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(Color.textPrimary)
-                            if let desc = option.description, !desc.isEmpty {
-                                Text(desc)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Color.subtleText)
-                                    .lineLimit(2)
-                            }
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(color.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(color.opacity(0.3), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(approval.status == .submitting)
-                .opacity(approval.status == .submitting ? 0.5 : 1)
-            }
-
-            // Freeform answer for AskUserQuestion — type a custom response when
-            // none of the preset options fit (parity with the terminal/web client,
-            // which always allow a typed answer). index -1 == freeform text.
-            if approval.question != nil {
-                HStack(spacing: 8) {
-                    TextField("직접 입력…", text: $freeformText, axis: .vertical)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.textPrimary)
-                        .tint(Color.claudeOrange)
-                        .lineLimit(1...3)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(Color.surfaceElevated)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.hairline, lineWidth: 1))
+            // AskUserQuestion → collect-then-submit form (handles multiSelect and
+            // multiple questions). Standard permissions keep the one-tap buttons.
+            if let questions = approval.askQuestions, !questions.isEmpty {
+                askQuestionForm(questions)
+            } else {
+                ForEach(Array(approval.options.enumerated()), id: \.element.id) { index, option in
+                    let color = colorForOption(index, total: approval.options.count)
                     Button {
-                        let t = freeformText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !t.isEmpty else { return }
-                        relayService.respond(to: approval, optionLabel: t, index: -1)
+                        relayService.respond(to: approval, optionLabel: option.label, index: index)
                     } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 36, height: 36)
-                            .background(freeformText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || approval.status == .submitting
-                                        ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        HStack(spacing: 8) {
+                            Text("\(index + 1).")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(color)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.label)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.textPrimary)
+                                if let desc = option.description, !desc.isEmpty {
+                                    Text(desc)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color.subtleText)
+                                        .lineLimit(2)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(color.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(color.opacity(0.3), lineWidth: 1)
+                        )
                     }
-                    .disabled(freeformText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || approval.status == .submitting)
+                    .buttonStyle(.plain)
+                    .disabled(approval.status == .submitting)
+                    .opacity(approval.status == .submitting ? 0.5 : 1)
                 }
             }
 
@@ -247,6 +221,119 @@ struct ApprovalCard: View {
         default:
             EmptyView()
         }
+    }
+
+    // MARK: AskUserQuestion form (multiSelect / multiple questions)
+
+    @ViewBuilder
+    private func askQuestionForm(_ questions: [ApprovalRequest.AskQuestion]) -> some View {
+        ForEach(questions) { q in
+            VStack(alignment: .leading, spacing: 6) {
+                if questions.count > 1 {
+                    Text(q.header ?? q.question)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if q.multiSelect {
+                    Text("여러 개 선택 가능")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.subtleText)
+                }
+                ForEach(q.options) { opt in
+                    let selected = (selections[q.id] ?? []).contains(opt.label)
+                    Button { toggle(q, opt.label) } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: q.multiSelect
+                                  ? (selected ? "checkmark.square.fill" : "square")
+                                  : (selected ? "largecircle.fill.circle" : "circle"))
+                                .font(.system(size: 16))
+                                .foregroundStyle(selected ? Color.claudeOrange : Color.subtleText)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(opt.label)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.textPrimary)
+                                if let d = opt.description, !d.isEmpty {
+                                    Text(d).font(.system(size: 12)).foregroundStyle(Color.subtleText).lineLimit(2)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 8).padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(selected ? Color.claudeOrange.opacity(0.12) : Color.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(selected ? Color.claudeOrange.opacity(0.4) : Color.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(approval.status == .submitting)
+                }
+                TextField("직접 입력…", text: freeformBinding(q.id), axis: .vertical)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.textPrimary)
+                    .tint(Color.claudeOrange)
+                    .lineLimit(1...3)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(Color.surfaceElevated)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.hairline, lineWidth: 1))
+            }
+            .padding(.bottom, 4)
+        }
+
+        let ready = allAnswered(questions) && approval.status != .submitting
+        Button { submitAnswers(questions) } label: {
+            HStack {
+                Spacer()
+                Text(approval.status == .submitting ? "전송 중…" : "전송")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+            .padding(.vertical, 12)
+            .background(ready ? Color.claudeOrange : Color.subtleText.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .disabled(!ready)
+    }
+
+    private func toggle(_ q: ApprovalRequest.AskQuestion, _ label: String) {
+        var set = selections[q.id] ?? []
+        if q.multiSelect {
+            if set.contains(label) { set.remove(label) } else { set.insert(label) }
+        } else {
+            set = set.contains(label) ? [] : [label]
+        }
+        selections[q.id] = set
+    }
+
+    private func freeformBinding(_ id: UUID) -> Binding<String> {
+        Binding(get: { freeform[id] ?? "" }, set: { freeform[id] = $0 })
+    }
+
+    /// The answer for one question: chosen labels (in option order) + any typed
+    /// text, joined by ", ". nil when nothing is selected/typed.
+    private func answerFor(_ q: ApprovalRequest.AskQuestion) -> String? {
+        let picked = selections[q.id] ?? []
+        var parts = q.options.map { $0.label }.filter { picked.contains($0) }
+        let typed = (freeform[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { parts.append(typed) }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    private func allAnswered(_ questions: [ApprovalRequest.AskQuestion]) -> Bool {
+        questions.allSatisfy { answerFor($0) != nil }
+    }
+
+    private func submitAnswers(_ questions: [ApprovalRequest.AskQuestion]) {
+        var answers: [String: String] = [:]
+        for q in questions {
+            guard let a = answerFor(q) else { return }
+            answers[q.question] = a
+        }
+        relayService.respondWithAnswers(to: approval, answers: answers)
     }
 
     private func colorForOption(_ index: Int, total: Int) -> Color {

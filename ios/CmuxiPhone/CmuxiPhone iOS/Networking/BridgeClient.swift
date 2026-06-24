@@ -327,6 +327,18 @@ final class BridgeClient {
         try await authenticatedPostRaw(path: "command", body: body)
     }
 
+    /// Answers an AskUserQuestion with a per-question answer map (multiSelect /
+    /// multiple questions). The bridge forwards it as the AskUserQuestion answer.
+    func respondToApprovalWithAnswers(requestId: String, answers: [String: String], terminalId: String? = nil, expectedScreenHash: String? = nil) async throws {
+        var body: [String: Any] = [
+            "permissionId": requestId,
+            "decision": ["behavior": "allow"],
+            "answers": answers
+        ]
+        pin(&body, terminalId: terminalId, expectedScreenHash: expectedScreenHash)
+        try await authenticatedPostRaw(path: "command", body: body)
+    }
+
     /// Responds with "allow" + adds a permission rule so it doesn't ask again this session.
     func respondToApprovalAllowAll(requestId: String, terminalId: String? = nil, expectedScreenHash: String? = nil) async throws {
         let decision: [String: Any] = [

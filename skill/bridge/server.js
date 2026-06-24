@@ -1244,6 +1244,7 @@ async function handleCommand(req, res) {
     kill: killRequest,
     selectedOption,
     optionIndex,
+    answers,
   } = body;
 
   // --- Direct cmux key event (mobile mirror, drives interactive TUI pickers) ---
@@ -1317,7 +1318,7 @@ async function handleCommand(req, res) {
   }
 
   // --- Permission response ---
-  if (permissionId && (decision || selectedOption !== undefined || Number.isInteger(optionIndex))) {
+  if (permissionId && (decision || selectedOption !== undefined || Number.isInteger(optionIndex) || answers)) {
     if (decision) {
       if (allowAll && decision.behavior === "allow") {
         decision.updatedPermissions = pendingPermissionBodies.get(permissionId) || [];
@@ -1327,6 +1328,8 @@ async function handleCommand(req, res) {
       // Forward the watch's selected option so the hook response can include it
       if (selectedOption !== undefined) decision.selectedOption = selectedOption;
       if (Number.isInteger(optionIndex)) decision.optionIndex = optionIndex;
+      // Structured AskUserQuestion answers (multiSelect / multiple questions).
+      if (answers && typeof answers === "object") decision.answers = answers;
 
       const resolved = resolvePermission(permissionId, decision);
       if (resolved) {
@@ -1709,14 +1712,22 @@ async function handleHookPermission(req, res) {
     hookResponse.hookSpecificOutput.decision.message = decision.message;
   }
 
-  // For AskUserQuestion: forward the watch-selected option as the answer so Claude
-  // Code doesn't fall back to waiting for terminal input.
-  if (decision.selectedOption !== undefined && body.tool_name === "AskUserQuestion") {
+  // For AskUserQuestion: forward the phone's answer(s) so Claude Code doesn't fall
+  // back to waiting for terminal input. Prefer the structured per-question map
+  // (multiSelect / multiple questions); fall back to a single selected option.
+  if (body.tool_name === "AskUserQuestion") {
     const questions = body.tool_input?.questions;
-    if (questions && questions.length > 0 && questions[0]?.question) {
-      const answers = { [questions[0].question]: decision.selectedOption };
-      hookResponse.hookSpecificOutput.decision.updatedInput = { questions, answers };
-      log("info", `AskUserQuestion answer forwarded`);
+    if (questions && questions.length > 0) {
+      let answers = null;
+      if (decision.answers && typeof decision.answers === "object" && Object.keys(decision.answers).length > 0) {
+        answers = decision.answers;
+      } else if (decision.selectedOption !== undefined && questions[0]?.question) {
+        answers = { [questions[0].question]: decision.selectedOption };
+      }
+      if (answers) {
+        hookResponse.hookSpecificOutput.decision.updatedInput = { questions, answers };
+        log("info", `AskUserQuestion answer forwarded (${Object.keys(answers).length} question(s))`);
+      }
     }
   }
 

@@ -58,9 +58,34 @@ struct ApprovalRequest: Identifiable, Codable {
         }
     }
 
+    /// One AskUserQuestion question — carries multiSelect + its own options so the
+    /// app can render checkboxes vs radio, and handle several questions at once.
+    struct AskQuestion: Identifiable, Codable, Equatable {
+        let id: UUID
+        let question: String
+        let header: String?
+        let multiSelect: Bool
+        let options: [OptionItem]
+
+        init(question: String, header: String? = nil, multiSelect: Bool = false, options: [OptionItem] = []) {
+            self.id = UUID()
+            self.question = question
+            self.header = header
+            self.multiSelect = multiSelect
+            self.options = options
+        }
+
+        static func == (lhs: AskQuestion, rhs: AskQuestion) -> Bool { lhs.id == rhs.id }
+    }
+
+    /// Full AskUserQuestion question set (nil for standard permissions). When set,
+    /// the card renders a collect-then-submit form instead of one-tap buttons.
+    var askQuestions: [AskQuestion]? = nil
+
     init(permissionId: String? = nil, toolName: String, actionSummary: String, question: String? = nil, options: [OptionItem] = [],
          sessionId: String? = nil, macName: String? = nil, cwd: String? = nil, agent: String? = nil, reason: String? = nil,
-         terminalId: String? = nil, expectedScreenHash: String? = nil, bridgeID: UUID? = nil) {
+         terminalId: String? = nil, expectedScreenHash: String? = nil, bridgeID: UUID? = nil,
+         askQuestions: [AskQuestion]? = nil) {
         self.id = UUID()
         self.permissionId = permissionId
         self.toolName = toolName
@@ -77,5 +102,6 @@ struct ApprovalRequest: Identifiable, Codable {
         self.terminalId = terminalId
         self.expectedScreenHash = expectedScreenHash
         self.bridgeID = bridgeID
+        self.askQuestions = askQuestions
     }
 }
