@@ -52,6 +52,7 @@ struct ApprovalQueueView: View {
 struct ApprovalCard: View {
     let approval: ApprovalRequest
     @EnvironmentObject private var relayService: RelayService
+    @State private var freeformText = ""
 
     private var projectName: String {
         if let cwd = approval.cwd, !cwd.isEmpty {
@@ -162,6 +163,38 @@ struct ApprovalCard: View {
                 .buttonStyle(.plain)
                 .disabled(approval.status == .submitting)
                 .opacity(approval.status == .submitting ? 0.5 : 1)
+            }
+
+            // Freeform answer for AskUserQuestion — type a custom response when
+            // none of the preset options fit (parity with the terminal/web client,
+            // which always allow a typed answer). index -1 == freeform text.
+            if approval.question != nil {
+                HStack(spacing: 8) {
+                    TextField("직접 입력…", text: $freeformText, axis: .vertical)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.textPrimary)
+                        .tint(Color.claudeOrange)
+                        .lineLimit(1...3)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.hairline, lineWidth: 1))
+                    Button {
+                        let t = freeformText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !t.isEmpty else { return }
+                        relayService.respond(to: approval, optionLabel: t, index: -1)
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(freeformText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || approval.status == .submitting
+                                        ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .disabled(freeformText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || approval.status == .submitting)
+                }
             }
 
             statusFooter
