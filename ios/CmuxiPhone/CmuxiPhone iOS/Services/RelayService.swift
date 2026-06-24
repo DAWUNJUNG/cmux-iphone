@@ -527,6 +527,9 @@ final class RelayService: ObservableObject {
         case "permission-cleared":
             handlePermissionCleared(data)
 
+        case "permission-sync":
+            handlePermissionSync(data, bridgeID: bridgeID)
+
         case "session":
             handleSessionEvent(data, bridgeID: bridgeID)
 
@@ -921,6 +924,27 @@ final class RelayService: ObservableObject {
         pendingApproval = approvalQueue.first
         for idx in sessions.indices {
             if sessions[idx].pendingApproval?.permissionId == permissionId {
+                sessions[idx].pendingApproval = nil
+                if sessions[idx].activity == .waitingApproval {
+                    sessions[idx].activity = .running
+                }
+            }
+        }
+    }
+
+    /// The bridge's authoritative pending-approval set (sent on every reconnect).
+    /// Drop any of THIS bridge's cards the bridge no longer considers pending —
+    /// they were answered on the PC, resolved while we were away, or orphaned
+    /// across a bridge restart, and would otherwise linger as zombie cards.
+    private func handlePermissionSync(_ data: String, bridgeID: UUID) {
+        guard let json = parseJSON(data) else { return }
+        let live = Set((json["permissionIds"] as? [String]) ?? [])
+        approvalQueue.removeAll { a in
+            a.bridgeID == bridgeID && (a.permissionId.map { !live.contains($0) } ?? false)
+        }
+        pendingApproval = approvalQueue.first
+        for idx in sessions.indices where sessions[idx].bridgeID == bridgeID {
+            if let pid = sessions[idx].pendingApproval?.permissionId, !live.contains(pid) {
                 sessions[idx].pendingApproval = nil
                 if sessions[idx].activity == .waitingApproval {
                     sessions[idx].activity = .running

@@ -1526,6 +1526,22 @@ function handleEvents(req, res) {
     try { res.write(syncEntry); } catch { /* ignore */ }
   }
 
+  // Authoritative pending-approval set for THIS bridge. The re-sends above only
+  // ADD cards; this lets the client DROP any stale card it cached (answered on
+  // the PC, resolved while the app was away, or orphaned across a bridge restart)
+  // that the bridge no longer considers pending.
+  const pendingApprovalIds = [
+    ...pendingPermissionPayloads.keys(),
+    ...codexSyntheticPermissions.keys(),
+  ];
+  try {
+    res.write(formatSseMessage({
+      id: sseEventId++,
+      event: "permission-sync",
+      data: JSON.stringify({ permissionIds: pendingApprovalIds }),
+    }));
+  } catch { /* ignore */ }
+
   const heartbeat = setInterval(() => {
     try {
       res.write(":heartbeat\n\n");
