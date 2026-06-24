@@ -1058,6 +1058,30 @@ async function scanCodexLog() {
   await consumeCodexLogChunk(text);
 }
 
+// A Codex approval card can get stranded if the prompt was answered ON THE PC
+// (or the bridge missed the `exec_approval close` log): the in-memory entry
+// lingers, the app shows it, and it's re-sent on every reconnect. Codex's screen
+// is static while it waits for the approval, so a live screenHash that no longer
+// matches the pinned one means the prompt is gone. Debounced 2 ticks (~3s) so a
+// one-off repaint can't drop a still-valid card. Same screenHash invariant the
+// answer path (resolveCodexSyntheticPermission) already trusts.
+async function reconcileCodexApprovals() {
+  if (!cmux.cmuxAvailable() || codexSyntheticPermissions.size === 0) return;
+  for (const synthetic of [...codexSyntheticPermissions.values()]) {
+    const tid = synthetic.terminalId;
+    if (!tid || !synthetic.screenHash) continue; // can't verify without a pinned screen
+    let currentHash;
+    try { currentHash = await cmux.screenHash(tid); } catch { continue; }
+    if (!currentHash) continue;
+    if (currentHash === synthetic.screenHash) { synthetic.staleSeen = 0; continue; }
+    synthetic.staleSeen = (synthetic.staleSeen || 0) + 1;
+    if (synthetic.staleSeen >= 2) {
+      clearCodexSyntheticPermissionForSession(synthetic.sessionId, "answered-elsewhere");
+      log("info", `Cleared stranded Codex approval for session ${synthetic.sessionId} (screen changed — answered elsewhere)`);
+    }
+  }
+}
+
 function startCodexMonitor() {
   if (codexMonitorInterval) return;
 
@@ -1071,6 +1095,7 @@ function startCodexMonitor() {
       log("warn", `Codex monitor scan failed: ${err.message}`);
     }
     scanCodexLog().catch((err) => log("warn", `Codex log scan failed: ${err.message}`));
+    reconcileCodexApprovals().catch((err) => log("warn", `Codex approval reconcile failed: ${err.message}`));
   }, CODEX_SESSION_SCAN_INTERVAL_MS);
 }
 
