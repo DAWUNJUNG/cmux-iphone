@@ -118,12 +118,7 @@ struct SettingsView: View {
             }
             .onDelete { offsets in
                 for i in offsets {
-                    let conn = store.connections[i]
-                    if conn.id == store.activeID {
-                        relayService.forgetActive()
-                    } else {
-                        store.remove(conn.id)
-                    }
+                    relayService.forget(store.connections[i].id)
                 }
             }
 

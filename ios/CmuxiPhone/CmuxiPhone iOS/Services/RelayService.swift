@@ -68,8 +68,32 @@ final class RelayService: ObservableObject {
 
     // MARK: - Private
 
-    private let bridgeClient = BridgeClient()
-    private let sseClient = SSEClient()
+    /// All connected bridges — one per paired Mac, each with its own HTTP client
+    /// and SSE stream, all live at once. Sessions/approvals are tagged with their
+    /// bridge's id so commands and approvals route back to the right Mac.
+    private var connections: [BridgeConnection] = []
+    /// Which bridge the cmux mirror, supervise toggle, and "active" label follow
+    /// (the Mac whose detail is on screen). Per-session routing ignores this.
+    @Published var focusedBridgeID: UUID?
+
+    private let fallbackClient = BridgeClient() // ponytail: inert stand-in; real calls go through a connection
+    /// The focused bridge's client — for non-session-scoped calls (cmux, supervise,
+    /// status). Falls back to an inert client when nothing is connected.
+    private var bridgeClient: BridgeClient { focusedConn?.client ?? fallbackClient }
+    private var focusedConn: BridgeConnection? {
+        connections.first { $0.id == focusedBridgeID } ?? connections.first
+    }
+    /// The connection for a given bridge id (or the focused one when id is nil).
+    private func conn(_ id: UUID?) -> BridgeConnection? {
+        if let id, let c = connections.first(where: { $0.id == id }) { return c }
+        return focusedConn
+    }
+    /// The client that owns a given session, for routing its commands/approvals.
+    private func client(forSession sid: String?) -> BridgeClient {
+        let bid = sid.flatMap { s in sessions.first(where: { $0.id == s })?.bridgeID }
+        return conn(bid)?.client ?? bridgeClient
+    }
+
     private let discovery = BonjourDiscovery()
     private let notificationService = NotificationService()
     private let sessionManager = WatchSessionManager.shared
@@ -88,109 +112,161 @@ final class RelayService: ObservableObject {
     // MARK: - Init
 
     private init() {
-        isPaired = bridgeClient.isPaired
         setupWatchMessageHandler()
-        setupSSEEventHandler()
+        connectAllSaved()
+    }
 
+    // MARK: - Multi-bridge connection management
+
+    /// Build + connect a live BridgeConnection for every saved Mac that has a
+    /// token, so all paired Macs stream simultaneously.
+    private func connectAllSaved() {
+        let store = ConnectionStore.shared
+        for saved in store.connections where !saved.token.isEmpty {
+            addConnection(saved, focus: saved.id == store.activeID)
+        }
+        if focusedBridgeID == nil { focusedBridgeID = connections.first?.id }
+        isPaired = !connections.isEmpty
         if isPaired {
-            Task { await reconnect() }
+            machineName = focusedConn?.name
+            connectionState = .connecting
+            startElapsedTimer()
+        }
+    }
+
+    /// Add (or focus, if already present) a connection for a saved Mac and open
+    /// its SSE stream. Additive — never tears down the other live bridges.
+    @discardableResult
+    private func addConnection(_ saved: SavedConnection, focus: Bool) -> BridgeConnection {
+        if let existing = connections.first(where: { $0.id == saved.id }) {
+            if focus { focusedBridgeID = saved.id }
+            return existing
+        }
+        let c = BridgeConnection(saved: saved)
+        wireSSE(c)
+        connections.append(c)
+        if focus || focusedBridgeID == nil { focusedBridgeID = c.id }
+        isPaired = true
+        if let url = c.client.baseURL, let token = c.client.token {
+            c.sse.connect(baseURL: url, token: token)
+        }
+        return c
+    }
+
+    /// Tear down one bridge and drop only its sessions/approvals. Keeps the
+    /// focused bridge and the store's active id in lockstep when reassigning.
+    private func removeConnection(_ id: UUID) {
+        connections.first(where: { $0.id == id })?.sse.disconnect()
+        connections.removeAll { $0.id == id }
+        dropState(forBridge: id)
+        if focusedBridgeID == id {
+            focusedBridgeID = connections.first?.id
+            if let f = focusedBridgeID { ConnectionStore.shared.setActive(f) }
+        }
+        isPaired = !connections.isEmpty
+        machineName = focusedConn?.name
+        recomputeConnectionState()
+    }
+
+    /// Wire one connection's SSE callbacks, tagging every event with its bridge id.
+    private func wireSSE(_ c: BridgeConnection) {
+        let bid = c.id
+        c.sse.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handleBridgeEvent(event, bridgeID: bid) }
+        }
+        c.sse.onStateChange = { [weak self] state in
+            Task { @MainActor in self?.handleSSEStateChange(state, bridgeID: bid) }
+        }
+    }
+
+    private func handleSSEStateChange(_ state: SSEClient.SSEState, bridgeID: UUID) {
+        if state == .connected {
+            lastConnected = Date()
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "last_connected")
+        }
+        recomputeConnectionState()
+        updateWatchState()
+    }
+
+    /// The global status pill reflects the best state across all bridges; the
+    /// office list shows each Mac's own state via `state(of:)`.
+    private func recomputeConnectionState() {
+        let states = connections.map { $0.sse.state }
+        if !states.contains(.polling) { stopSSERetry() } else { scheduleSSERetry() }
+        if states.contains(.connected) { connectionState = .connected }
+        else if states.contains(.polling) { connectionState = .degraded }
+        else if states.contains(.connecting) { connectionState = .connecting }
+        else { connectionState = .disconnected }
+    }
+
+    // MARK: - Per-bridge accessors (for the office list / focused workspace view)
+
+    /// Sessions belonging to the focused Mac — drives the per-Mac workspace view.
+    var focusedSessions: [AgentSession] {
+        guard let fid = focusedBridgeID else { return sessions }
+        return sessions.filter { $0.bridgeID == fid }
+    }
+    func sessionCount(_ bridgeID: UUID) -> Int { sessions.filter { $0.bridgeID == bridgeID }.count }
+    func folderCount(_ bridgeID: UUID) -> Int {
+        let keys = sessions.filter { $0.bridgeID == bridgeID }.map { s -> String in
+            if !s.folderName.isEmpty { return s.folderName }
+            let leaf = (s.cwd as NSString).lastPathComponent
+            return leaf.isEmpty ? "(unknown)" : leaf
+        }
+        return Set(keys).count
+    }
+    func state(of bridgeID: UUID) -> ConnectionState {
+        guard let c = connections.first(where: { $0.id == bridgeID }) else { return .disconnected }
+        switch c.sse.state {
+        case .connected:   return .connected
+        case .polling:     return .degraded
+        case .connecting:  return .connecting
+        case .disconnected: return .disconnected
         }
     }
 
     // MARK: - Pairing
 
-    /// Discovers the bridge on LAN and pairs with the given code.
+    /// Discovers the bridge on LAN and pairs with the given code, then connects it
+    /// ADDITIVELY — any already-paired Macs stay connected and streaming.
     func pair(code: String) async throws {
-        print("[RelayService] Starting pair with code: \(code)")
-
-        // Discover bridge via Bonjour (or localhost fallback)
-        let service: BonjourDiscovery.DiscoveredService
-        do {
-            service = try await discovery.discover()
-            print("[RelayService] Discovered bridge at \(service.host):\(service.port)")
-        } catch {
-            print("[RelayService] Discovery failed: \(error)")
-            throw error
-        }
-
-        // Configure the HTTP client
-        bridgeClient.configure(host: service.host, port: service.port)
-
-        // Attempt pairing
-        do {
-            try await bridgeClient.pair(code: code)
-            print("[RelayService] Pairing successful!")
-        } catch {
-            print("[RelayService] Pairing failed: \(error)")
-            throw error
-        }
-
-        // Success
-        machineName = service.machineName
-        lastConnected = Date()
-        isPaired = true
-        connectionState = .connected
-
-        if let token = bridgeClient.token {
-            ConnectionStore.shared.upsert(
-                name: service.machineName ?? service.host,
-                host: service.host, port: Int(service.port), token: token
-            )
-        }
-        isAddingMac = false
-
-        UserDefaults.standard.set(service.host, forKey: "bridge_host")
-        UserDefaults.standard.set(Int(service.port), forKey: "bridge_port")
-        UserDefaults.standard.set(service.machineName, forKey: "paired_machine_name")
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "last_connected")
-
-        print("[RelayService] isPaired = true, starting event stream")
-
-        // Start SSE connection
-        startEventStream()
-        startElapsedTimer()
-
-        // Notify watch of connection
-        updateWatchState()
+        let service = try await discovery.discover()
+        try await pairAndConnect(service: service, code: code)
     }
 
     /// Pairs using a manual IP address (fallback when Bonjour fails on real devices).
     func pairWithIP(_ ip: String, code: String) async throws {
-        print("[RelayService] Manual IP pair: \(ip), code: \(code)")
-
         let service = try await discovery.discoverAtIP(ip)
-        bridgeClient.configure(host: service.host, port: service.port)
+        try await pairAndConnect(service: service, code: code)
+    }
 
-        try await bridgeClient.pair(code: code)
+    /// Shared pairing tail: pair over a throwaway client, persist the token
+    /// per-bridge, then open a live connection alongside the existing ones.
+    private func pairAndConnect(service: BonjourDiscovery.DiscoveredService, code: String) async throws {
+        let pairing = BridgeClient()
+        pairing.configure(host: service.host, port: service.port)
+        try await pairing.pair(code: code)
+        guard let token = pairing.token else { throw BridgeClient.BridgeError.networkError }
 
-        machineName = service.machineName
-        lastConnected = Date()
-        isPaired = true
-        connectionState = .connected
-
-        if let token = bridgeClient.token {
-            ConnectionStore.shared.upsert(
-                name: service.machineName ?? service.host,
-                host: service.host, port: Int(service.port), token: token
-            )
-        }
+        let saved = ConnectionStore.shared.upsert(
+            name: service.machineName ?? service.host,
+            host: service.host, port: Int(service.port), token: token
+        )
         isAddingMac = false
-
-        UserDefaults.standard.set(service.host, forKey: "bridge_host")
-        UserDefaults.standard.set(Int(service.port), forKey: "bridge_port")
-        UserDefaults.standard.set(service.machineName, forKey: "paired_machine_name")
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "last_connected")
-
-        startEventStream()
+        lastConnected = Date()
+        addConnection(saved, focus: true)
+        machineName = saved.name
         startElapsedTimer()
         updateWatchState()
     }
 
-    /// Removes pairing and disconnects.
+    /// Disconnects every bridge and clears all live state (keeps the saved Mac
+    /// list — use forget/remove to drop a specific Mac).
     func unpair() {
-        sseClient.disconnect()
+        connections.forEach { $0.sse.disconnect() }
+        connections = []
+        focusedBridgeID = nil
         stopSSERetry()
-        bridgeClient.clearCredentials()
         stopElapsedTimer()
         terminalBatchTimer?.invalidate()
         terminalBatchTimer = nil
@@ -202,39 +278,26 @@ final class RelayService: ObservableObject {
         resetPerMacState()
         connectionState = .disconnected
 
-        UserDefaults.standard.removeObject(forKey: "paired_machine_name")
-        UserDefaults.standard.removeObject(forKey: "last_connected")
-
-        // Notify watch
-        let state = SessionState.disconnected
-        sessionManager.updateApplicationContext(with: state)
+        sessionManager.updateApplicationContext(with: SessionState.disconnected)
     }
 
     // MARK: - Multi-Mac switching
 
     /// Switch to an already-paired Mac with one tap (no re-pairing).
+    /// Focus a paired Mac (show ITS cmux mirror / workspaces). All bridges stay
+    /// connected and streaming — this only changes which Mac the cmux mirror and
+    /// supervise toggle follow; sessions/approvals from every Mac remain merged.
     func switchTo(_ conn: SavedConnection) {
-        sseClient.disconnect()
-        stopSSERetry()
-        stopElapsedTimer()
-        sessionStartDate = nil
-        terminalBatchTimer?.invalidate()
-        terminalBatchTimer = nil
-        pendingTerminalLines = []
-
-        resetPerMacState()
-
-        bridgeClient.applyActive(host: conn.host, port: UInt16(conn.port), token: conn.token)
+        let c = addConnection(conn, focus: true)   // connect if it wasn't (offline-added), then focus
         ConnectionStore.shared.setActive(conn.id)
-
-        machineName = conn.name
-        isPaired = true
+        macGeneration &+= 1                          // invalidate focused-bridge async results
+        machineName = c.name
         isAddingMac = false
-        connectionState = .connecting
-
-        UserDefaults.standard.set(conn.name, forKey: "paired_machine_name")
-
-        startEventStream()
+        cmuxAvailable = false                        // mirror is focused-bridge-specific
+        cmuxWorkspaces = []
+        refreshCmuxTree()
+        refreshSupervise()
+        recomputeConnectionState()
         startElapsedTimer()
         updateWatchState()
     }
@@ -243,7 +306,7 @@ final class RelayService: ObservableObject {
     func refreshActiveName() {
         if let active = ConnectionStore.shared.active {
             machineName = active.name
-            UserDefaults.standard.set(active.name, forKey: "paired_machine_name")
+            connections.first(where: { $0.id == active.id })?.name = active.name
             updateWatchState()
         }
     }
@@ -348,40 +411,40 @@ final class RelayService: ObservableObject {
     func beginAddMac() { isAddingMac = true }
     func cancelAddMac() { isAddingMac = false }
 
-    /// Forget the active Mac; switch to another saved Mac if one exists.
-    func forgetActive() {
-        let store = ConnectionStore.shared
-        if let id = store.activeID { store.remove(id) }
+    /// Forget a SPECIFIC Mac (focused or not) — always disconnects its live bridge
+    /// and drops only its sessions/approvals; the other connected Macs are
+    /// untouched. The single entry point for deletion so a non-focused Mac can't be
+    /// removed from the store while leaving its SSE stream + state leaked behind.
+    func forget(_ id: UUID) {
+        let wasFocused = (id == focusedBridgeID)
+        ConnectionStore.shared.remove(id)
+        removeConnection(id)
 
-        sseClient.disconnect()
-        stopSSERetry()
-
-        if let next = store.active {
-            switchTo(next)
-            return
+        if connections.isEmpty {
+            // No Macs left — fall back to the pairing screen.
+            stopElapsedTimer()
+            terminalBatchTimer?.invalidate()
+            terminalBatchTimer = nil
+            isPaired = false
+            isAddingMac = false
+            machineName = nil
+            resetPerMacState()
+            connectionState = .disconnected
+            sessionManager.updateApplicationContext(with: SessionState.disconnected)
+        } else if wasFocused, let next = ConnectionStore.shared.active {
+            switchTo(next)   // refresh the cmux mirror/supervise for the new focus
         }
-
-        // No Macs left — fall back to the pairing screen.
-        bridgeClient.clearCredentials()
-        stopElapsedTimer()
-        terminalBatchTimer?.invalidate()
-        terminalBatchTimer = nil
-
-        isPaired = false
-        isAddingMac = false
-        machineName = nil
-        resetPerMacState()
-        connectionState = .disconnected
-
-        sessionManager.updateApplicationContext(with: SessionState.disconnected)
     }
 
-    /// Reset all per-Mac view state — sessions, terminal, approvals, AND the cmux
-    /// mirror (cmuxAvailable/cmuxWorkspaces/cmuxScreenTick) — so switching or
-    /// forgetting a Mac never leaves the previous Mac's workspaces visible or
-    /// tappable. Field-by-field reset previously drifted; centralize it here.
+    /// Forget the currently focused Mac (toolbar / no-arg path).
+    func forgetActive() {
+        if let id = focusedBridgeID ?? ConnectionStore.shared.activeID { forget(id) }
+    }
+
+    /// Reset ALL live state across every bridge (used by unpair / forgetting the
+    /// last Mac). Per-bridge removal uses `dropState(forBridge:)` instead.
     private func resetPerMacState() {
-        macGeneration &+= 1   // invalidate in-flight per-Mac async results (e.g. refreshCmuxTree)
+        macGeneration &+= 1
         sessions = []
         recentTerminalLines = []
         terminalBuffer.clear()
@@ -394,60 +457,13 @@ final class RelayService: ObservableObject {
         cmuxScreenTick = 0
     }
 
-    // MARK: - Reconnection
-
-    private func reconnect() async {
-        guard bridgeClient.isPaired else { return }
-
-        machineName = UserDefaults.standard.string(forKey: "paired_machine_name")
-        if let ts = UserDefaults.standard.object(forKey: "last_connected") as? TimeInterval {
-            lastConnected = Date(timeIntervalSince1970: ts)
-        }
-
-        connectionState = .connecting
-        startEventStream()
-        startElapsedTimer()
-    }
-
-    // MARK: - SSE
-
-    private func startEventStream() {
-        guard let baseURL = bridgeClient.baseURL, let token = bridgeClient.token else { return }
-        sseClient.connect(baseURL: baseURL, token: token)
-    }
-
-    private func setupSSEEventHandler() {
-        sseClient.onEvent = { [weak self] event in
-            Task { @MainActor in
-                self?.handleBridgeEvent(event)
-            }
-        }
-
-        sseClient.onStateChange = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .connected:
-                    self?.connectionState = .connected
-                    self?.stopSSERetry()
-                    self?.lastConnected = Date()
-                    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "last_connected")
-                    self?.updateWatchState()
-                case .connecting:
-                    self?.connectionState = .connecting
-                case .disconnected:
-                    self?.connectionState = .disconnected
-                    self?.stopSSERetry()
-                    self?.updateWatchState()
-                case .polling:
-                    // Realtime (SSE) is lost — /status polling has no approvals or
-                    // terminal output. Surface as DEGRADED (not connected) and keep
-                    // trying to restore SSE so missed approvals replay on reconnect.
-                    self?.connectionState = .degraded
-                    self?.updateWatchState()
-                    self?.scheduleSSERetry()
-                }
-            }
-        }
+    /// Drop one bridge's sessions + approvals when that Mac is removed.
+    private func dropState(forBridge id: UUID) {
+        sessions.removeAll { $0.bridgeID == id }
+        let removed = approvalQueue.filter { $0.bridgeID == id }
+        approvalQueue.removeAll { $0.bridgeID == id }
+        for a in removed { if let pid = a.permissionId { resolvedPermissionIds.insert(pid) } }
+        pendingApproval = approvalQueue.first
     }
 
     // MARK: - SSE recovery (degraded -> retry)
@@ -455,7 +471,7 @@ final class RelayService: ObservableObject {
     private func scheduleSSERetry() {
         guard sseRetryTimer == nil else { return }
         sseRetryTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.sseClient.retrySSE() }
+            Task { @MainActor in self?.connections.forEach { $0.sse.retrySSE() } }
         }
     }
 
@@ -464,7 +480,7 @@ final class RelayService: ObservableObject {
         sseRetryTimer = nil
     }
 
-    private func handleBridgeEvent(_ event: SSEClient.SSEEvent) {
+    private func handleBridgeEvent(_ event: SSEClient.SSEEvent, bridgeID: UUID) {
         guard let eventType = event.event else { return }
         let data = event.data
 
@@ -473,13 +489,13 @@ final class RelayService: ObservableObject {
             handlePtyOutput(data)
 
         case "permission-request":
-            handlePermissionRequest(data)
+            handlePermissionRequest(data, bridgeID: bridgeID)
 
         case "permission-cleared":
             handlePermissionCleared(data)
 
         case "session":
-            handleSessionEvent(data)
+            handleSessionEvent(data, bridgeID: bridgeID)
 
         case "tool-output":
             handleToolOutput(data)
@@ -494,6 +510,9 @@ final class RelayService: ObservableObject {
             handleStop(data)
 
         case "cmux-event":
+            // The cmux mirror only shows the focused Mac — ignore other bridges'
+            // cmux churn so we don't refetch the focused tree for the wrong Mac.
+            guard bridgeID == focusedBridgeID else { break }
             refreshCmuxTree()
             cmuxScreenTick &+= 1
 
@@ -532,7 +551,7 @@ final class RelayService: ObservableObject {
         scheduleBatchSend()
     }
 
-    private func handlePermissionRequest(_ data: String) {
+    private func handlePermissionRequest(_ data: String, bridgeID: UUID) {
         guard let json = parseJSON(data) else { return }
 
         let permissionId = json["permissionId"] as? String ?? UUID().uuidString
@@ -584,7 +603,7 @@ final class RelayService: ObservableObject {
         print("[RelayService] Permission requested: \(toolName) — \(desc)")
 
         let reason = toolInput["reason"] as? String ?? (json["reason"] as? String)
-        let session = sessionId.flatMap { sid in sessions.first(where: { $0.id == sid }) }
+        let session = sessionId.flatMap { sid in sessions.first(where: { $0.id == sid && $0.bridgeID == bridgeID }) }
         // Live-terminal pin (codex/cmux approvals): the bridge snapshots the
         // terminal + its screen hash so the answer can't land on a wrong/changed screen.
         let terminalId = json["terminalId"] as? String
@@ -596,12 +615,13 @@ final class RelayService: ObservableObject {
             question: question,
             options: options,
             sessionId: sessionId,
-            macName: machineName,
+            macName: conn(bridgeID)?.name ?? machineName,
             cwd: session?.cwd,
             agent: session?.agent.rawValue ?? (json["source"] as? String),
             reason: reason,
             terminalId: terminalId,
-            expectedScreenHash: expectedHash
+            expectedScreenHash: expectedHash,
+            bridgeID: bridgeID
         )
 
         // Ignore re-sends of an approval we've already answered/cleared.
@@ -674,18 +694,19 @@ final class RelayService: ObservableObject {
 
         let tid = approval.terminalId
         let hash = approval.expectedScreenHash
+        let api = conn(approval.bridgeID)?.client ?? bridgeClient   // answer goes to the approval's own Mac
         Task { @MainActor in
             do {
                 if approval.question != nil {
                     // AskUserQuestion: send the option label (index -1 == freeform text)
-                    try await bridgeClient.respondToApprovalWithOption(
+                    try await api.respondToApprovalWithOption(
                         requestId: permissionId, optionLabel: optionLabel, index: index,
                         terminalId: tid, expectedScreenHash: hash)
                 } else if optionLabel.lowercased().contains("allow all") || optionLabel.lowercased().contains("don't ask") {
-                    try await bridgeClient.respondToApprovalAllowAll(
+                    try await api.respondToApprovalAllowAll(
                         requestId: permissionId, terminalId: tid, expectedScreenHash: hash)
                 } else {
-                    try await bridgeClient.respondToApproval(
+                    try await api.respondToApproval(
                         requestId: permissionId, allow: !isLast, terminalId: tid, expectedScreenHash: hash)
                 }
                 // Success — only NOW mark resolved + remove the card.
@@ -782,9 +803,10 @@ final class RelayService: ObservableObject {
 
         let tid = approval.terminalId
         let hash = approval.expectedScreenHash
+        let api = conn(approval.bridgeID)?.client ?? bridgeClient
         Task { @MainActor in
             do {
-                try await bridgeClient.respondToApprovalAllowAll(
+                try await api.respondToApprovalAllowAll(
                     requestId: permissionId, terminalId: tid, expectedScreenHash: hash)
                 if !permissionId.isEmpty { resolvedPermissionIds.insert(permissionId) }
                 clearPendingApproval(for: approval)
@@ -803,12 +825,14 @@ final class RelayService: ObservableObject {
     /// the session "thinking" once the bridge accepted it.
     @discardableResult
     func sendCommand(text: String, sessionId: String? = nil) async -> Bool {
-        let sid = sessionId ?? sessions.first(where: { $0.activity == .running })?.id
+        // No explicit session → fall back to a running session on the FOCUSED Mac
+        // (never a random other bridge's session).
+        let sid = sessionId ?? sessions.first(where: { $0.activity == .running && $0.bridgeID == focusedBridgeID })?.id
 
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
         do {
-            try await bridgeClient.sendCommand(text: text + "\n", sessionId: sid)
+            try await client(forSession: sid).sendCommand(text: text + "\n", sessionId: sid)
             // Echo the command into the transcript ONLY after the bridge accepts
             // it — appending before the send duplicated the line on retry.
             let cmdLine = TerminalLine(text: "> \(text)", type: .userPrompt, sessionId: sid)
@@ -881,7 +905,7 @@ final class RelayService: ObservableObject {
         }
     }
 
-    private func handleSessionEvent(_ data: String) {
+    private func handleSessionEvent(_ data: String, bridgeID: UUID) {
         guard let json = parseJSON(data),
               let state = json["state"] as? String else { return }
 
@@ -894,13 +918,13 @@ final class RelayService: ObservableObject {
         case "running":
             sessionStartDate = Date()
             if let sid = sessionId {
-                if let idx = sessions.firstIndex(where: { $0.id == sid }) {
+                if let idx = sessions.firstIndex(where: { $0.id == sid && $0.bridgeID == bridgeID }) {
                     sessions[idx].activity = .running
                 } else {
                     let agentType = AgentType(rawValue: agent ?? "claude") ?? .claude
                     sessions.append(AgentSession(
                         id: sid, agent: agentType, cwd: cwd,
-                        folderName: folderName, activity: .running
+                        folderName: folderName, activity: .running, bridgeID: bridgeID
                     ))
                 }
             }
@@ -908,11 +932,11 @@ final class RelayService: ObservableObject {
             setThinking(false, sessionId: sessionId)
             stopElapsedTimer()
             notificationService.postTaskComplete()
-            if let sid = sessionId, let idx = sessions.firstIndex(where: { $0.id == sid }) {
+            if let sid = sessionId, let idx = sessions.firstIndex(where: { $0.id == sid && $0.bridgeID == bridgeID }) {
                 sessions[idx].activity = .ended
             }
         case "connected":
-            connectionState = .connected
+            recomputeConnectionState()
         default:
             break
         }
@@ -1177,5 +1201,21 @@ final class RelayService: ObservableObject {
     private func parseJSON(_ string: String) -> [String: Any]? {
         guard let data = string.data(using: .utf8) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+}
+
+/// One live bridge connection: a configured HTTP client + its own SSE stream.
+/// RelayService holds several so multiple Macs stay connected simultaneously.
+@MainActor
+final class BridgeConnection {
+    let id: UUID
+    var name: String
+    let client = BridgeClient()
+    let sse = SSEClient()
+
+    init(saved: SavedConnection) {
+        self.id = saved.id
+        self.name = saved.name
+        client.setEndpoint(host: saved.host, port: UInt16(saved.port), token: saved.token)
     }
 }

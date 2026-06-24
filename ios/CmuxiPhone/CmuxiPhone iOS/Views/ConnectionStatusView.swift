@@ -63,8 +63,10 @@ struct ConnectionStatusView: View {
     @State private var deleteTarget: SavedConnection?
 
     private var connectedCount: Int {
-        (store.activeID != nil || store.connections.isEmpty)
-            && relayService.connectionState == .connected ? 1 : 0
+        if store.connections.isEmpty {
+            return relayService.connectionState == .connected ? 1 : 0
+        }
+        return store.connections.filter { relayService.state(of: $0.id) == .connected }.count
     }
 
     var body: some View {
@@ -154,11 +156,7 @@ struct ConnectionStatusView: View {
         )) {
             Button("삭제", role: .destructive) {
                 if let t = deleteTarget {
-                    if t.id == store.activeID {
-                        relayService.forgetActive()
-                    } else {
-                        store.remove(t.id)
-                    }
+                    relayService.forget(t.id)   // always tears down the live bridge too
                 }
                 deleteTarget = nil
             }
@@ -184,6 +182,7 @@ struct ConnectionStatusView: View {
                         name: relayService.machineName ?? "Mac",
                         subtitle: nil,
                         isActive: true,
+                        bridgeID: nil,
                         onTap: { path.append(OfficeRoute(id: UUID())) }
                     )
                 } else {
@@ -192,6 +191,7 @@ struct ConnectionStatusView: View {
                             name: conn.name,
                             subtitle: "\(conn.host):\(conn.port)",
                             isActive: conn.id == store.activeID,
+                            bridgeID: conn.id,
                             onTap: {
                                 if conn.id != store.activeID {
                                     relayService.switchTo(conn)
@@ -250,14 +250,15 @@ struct ConnectionStatusView: View {
         .buttonStyle(.plain)
     }
 
-    private func officeRow(name: String, subtitle: String?, isActive: Bool, onTap: @escaping () -> Void) -> some View {
-        let connected = isActive && relayService.connectionState == .connected
-        let connecting = isActive && relayService.connectionState == .connecting
-        let degraded = isActive && relayService.connectionState == .degraded
-        let sessionCount = isActive ? relayService.sessions.count : nil
-        let folderCount = isActive
-            ? Set(relayService.sessions.map { workspaceKey($0) }).count
-            : nil
+    private func officeRow(name: String, subtitle: String?, isActive: Bool, bridgeID: UUID?, onTap: @escaping () -> Void) -> some View {
+        // Each Mac shows ITS OWN live state — all paired Macs connect at once, so
+        // connectivity/counts are per-bridge, not gated on which one is focused.
+        let st: ConnectionState? = bridgeID.map { relayService.state(of: $0) }
+        let connected = st == .connected || (bridgeID == nil && relayService.connectionState == .connected)
+        let connecting = st == .connecting || (bridgeID == nil && relayService.connectionState == .connecting)
+        let degraded = st == .degraded || (bridgeID == nil && relayService.connectionState == .degraded)
+        let sessionCount = bridgeID.map { relayService.sessionCount($0) } ?? relayService.sessions.count
+        let folderCount = bridgeID.map { relayService.folderCount($0) } ?? Set(relayService.sessions.map { workspaceKey($0) }).count
         let dotColor: Color = connected
             ? Color.statusGreen
             : ((connecting || degraded) ? Color.claudeAmber : Color.subtleText.opacity(0.5))
@@ -285,15 +286,15 @@ struct ConnectionStatusView: View {
                             .foregroundStyle(Color.subtleText)
                             .lineLimit(1)
                     }
-                    if isActive, degraded {
+                    if degraded {
                         Text("실시간 끊김 · 재연결 중…")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.claudeAmber)
-                    } else if isActive, connected, let sessionCount, let folderCount {
+                    } else if connected {
                         Text("워크스페이스 \(folderCount) · 세션 \(sessionCount)")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.subtleText)
-                    } else if isActive, connecting {
+                    } else if connecting {
                         Text("연결 중…")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.claudeAmber)
@@ -330,11 +331,11 @@ struct ConnectionStatusView: View {
 private struct WorkspacesView: View {
     @EnvironmentObject private var relayService: RelayService
 
-    /// Sessions grouped by workspace key, order preserved by first appearance.
+    /// Sessions of the FOCUSED Mac, grouped by workspace key (order preserved).
     private var folders: [(key: String, sessions: [AgentSession])] {
         var order: [String] = []
         var map: [String: [AgentSession]] = [:]
-        for s in relayService.sessions {
+        for s in relayService.focusedSessions {
             let k = workspaceKey(s)
             if map[k] == nil { order.append(k) }
             map[k, default: []].append(s)
@@ -347,7 +348,7 @@ private struct WorkspacesView: View {
             Color.appBackground.ignoresSafeArea()
             if relayService.cmuxAvailable {
                 cmuxWorkspaceList
-            } else if relayService.sessions.isEmpty {
+            } else if relayService.focusedSessions.isEmpty {
                 emptyState
             } else {
                 ScrollView {
@@ -462,7 +463,7 @@ private struct WorkspacesView: View {
 
     private var header: some View {
         let folderCount = folders.count
-        let sessionCount = relayService.sessions.count
+        let sessionCount = relayService.focusedSessions.count
         return VStack(alignment: .leading, spacing: 4) {
             Text(relayService.machineName ?? "Workspaces")
                 .font(.system(size: 26, weight: .bold))
@@ -1241,7 +1242,7 @@ private struct SessionsListView: View {
     @EnvironmentObject private var relayService: RelayService
 
     private var sessions: [AgentSession] {
-        relayService.sessions.filter { workspaceKey($0) == folder }
+        relayService.focusedSessions.filter { workspaceKey($0) == folder }
     }
 
     private var cwd: String { sessions.first?.cwd ?? "" }

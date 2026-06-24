@@ -82,6 +82,15 @@ final class BridgeClient {
         KeychainStore.set(token, for: "bridge_token")
     }
 
+    /// Point this client at a specific bridge in memory only — no writes to the
+    /// shared single-bridge UserDefaults/Keychain slot. Used when several bridges
+    /// are connected simultaneously (tokens are persisted per-bridge by
+    /// ConnectionStore, keyed by connection id).
+    func setEndpoint(host: String, port: UInt16, token: String) {
+        self.baseURL = URL(string: "http://\(host):\(port)")
+        self.token = token
+    }
+
     var isPaired: Bool {
         token != nil && baseURL != nil
     }

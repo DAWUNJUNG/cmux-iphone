@@ -16,6 +16,9 @@ struct ApprovalRequest: Identifiable, Codable {
     var cwd: String? = nil
     var agent: String? = nil
     var reason: String? = nil
+    /// Which paired Mac (bridge) this approval came from — used to route the
+    /// answer back to the right bridge when several are connected at once.
+    var bridgeID: UUID? = nil
 
     // Live-terminal pinning for cmux/codex approvals: the terminal the approval
     // belongs to, and the hash of the screen the user was shown. Sent back on
@@ -57,7 +60,7 @@ struct ApprovalRequest: Identifiable, Codable {
 
     init(permissionId: String? = nil, toolName: String, actionSummary: String, question: String? = nil, options: [OptionItem] = [],
          sessionId: String? = nil, macName: String? = nil, cwd: String? = nil, agent: String? = nil, reason: String? = nil,
-         terminalId: String? = nil, expectedScreenHash: String? = nil) {
+         terminalId: String? = nil, expectedScreenHash: String? = nil, bridgeID: UUID? = nil) {
         self.id = UUID()
         self.permissionId = permissionId
         self.toolName = toolName
@@ -73,5 +76,6 @@ struct ApprovalRequest: Identifiable, Codable {
         self.reason = reason
         self.terminalId = terminalId
         self.expectedScreenHash = expectedScreenHash
+        self.bridgeID = bridgeID
     }
 }

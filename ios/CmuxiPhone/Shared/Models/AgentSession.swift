@@ -16,6 +16,9 @@ struct AgentSession: Identifiable, Codable, Equatable {
     var terminalLines: [TerminalLine] = []
     var pendingApproval: ApprovalRequest?
     var thinking: Bool = false          // per-session "생각 중" indicator
+    /// Which paired Mac (bridge) this session belongs to. nil on the watch and
+    /// for legacy single-bridge state; set by RelayService when connecting N Macs.
+    var bridgeID: UUID? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, agent, cwd, folderName, activity
@@ -41,7 +44,7 @@ struct AgentSession: Identifiable, Codable, Equatable {
         pendingApproval = nil
     }
 
-    init(id: String, agent: AgentType, cwd: String, folderName: String, activity: SessionActivity) {
+    init(id: String, agent: AgentType, cwd: String, folderName: String, activity: SessionActivity, bridgeID: UUID? = nil) {
         self.id = id
         self.agent = agent
         self.cwd = cwd
@@ -49,6 +52,7 @@ struct AgentSession: Identifiable, Codable, Equatable {
         self.activity = activity
         self.terminalLines = []
         self.pendingApproval = nil
+        self.bridgeID = bridgeID
     }
 
     static func == (lhs: AgentSession, rhs: AgentSession) -> Bool {
