@@ -1141,6 +1141,23 @@ function resolvePermission(permissionId, decision) {
   return true;
 }
 
+// A session can only have ONE approval pending at a time — Claude is blocked
+// until it resolves. So ANY later activity for that session (a tool ran, the turn
+// stopped, a new approval) means the prior one was already answered (often in the
+// terminal on the Mac, where Claude does NOT close the hook connection — so the
+// res-close detection can't catch it). Drop those stranded cards.
+function clearSessionPendingApprovals(sessionId, reason, exceptId = null) {
+  if (!sessionId) return;
+  for (const [pid, payload] of [...pendingPermissionPayloads]) {
+    if (pid === exceptId || payload.sessionId !== sessionId) continue;
+    // Resolve the still-blocking hook (harmless if Claude already moved on) and
+    // tell clients to drop the card; if it wasn't blocking, clear directly.
+    if (!resolvePermission(pid, { behavior: "allow", reason })) {
+      clearPermissionState(pid, reason);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -1624,6 +1641,9 @@ async function handleHookToolOutput(req, res) {
   const source = body.source || "claude";
   log("info", `Hook: ${source === "codex" ? "Codex" : "PostToolUse"} received [${source}]${sid ? ` session=${sid}` : ""}`, body.tool_name || "");
   pushSseEvent("tool-output", { ...body, source }, sid);
+  // A tool ran ⇒ any approval that gated it is already resolved (incl. answered
+  // in the terminal). Drop stranded cards for this session.
+  clearSessionPendingApprovals(sid, "session-advanced");
   return jsonResponse(res, 200, { ok: true });
 }
 
@@ -1643,6 +1663,10 @@ async function handleHookPermission(req, res) {
   const sid = resolveHookSession(body);
   const permissionId = crypto.randomUUID();
   log("info", `Hook: PermissionRequest received (id: ${permissionId})${sid ? ` session=${sid}` : ""}`, body.tool_name || "");
+
+  // A new approval for this session supersedes any prior one still showing
+  // (the previous was answered — often in the terminal — and Claude moved on).
+  clearSessionPendingApprovals(sid, "superseded");
 
   if (body.permission_suggestions) {
     pendingPermissionBodies.set(permissionId, body.permission_suggestions);
@@ -1758,6 +1782,9 @@ async function handleHookStop(req, res) {
 
   const sid = resolveHookSession(body);
   log("info", `Hook: Stop received${sid ? ` session=${sid}` : ""}`);
+
+  // Turn ended ⇒ no approval can still be genuinely pending for this session.
+  clearSessionPendingApprovals(sid, "session-advanced");
 
   // Attach the final answer text (+ reasoning) on a real Stop (skip Codex and
   // Notification pings, which would otherwise re-send the same text and dupe).
