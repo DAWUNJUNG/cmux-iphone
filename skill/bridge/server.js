@@ -71,6 +71,10 @@ const CONFIG = getConfig();
 const PORT_RANGE_START = CONFIG.ports.apiPort;
 const PORT_RANGE_END = CONFIG.ports.apiPortRangeEnd;
 const BIND_ADDRESS = process.env.HOST || CONFIG.bindAddress || "0.0.0.0";
+// Optional ntfy push — reaches the phone even when the app is closed (the
+// in-app local notification needs a live connection). Off unless a topic is set.
+const NTFY_SERVER = (process.env.CW_NTFY_SERVER || CONFIG.ntfy?.server || "https://ntfy.sh").replace(/\/+$/, "");
+const NTFY_TOPIC = process.env.CW_NTFY_TOPIC || CONFIG.ntfy?.topic || null;
 const PAIRING_CODE_TTL_MS = CONFIG.pairing?.ttlMs ?? 24 * 60 * 60 * 1000; // rotating-mode TTL
 // Pairing default is FIXED (per-machine random 6-digit, persisted by
 // `cmux-iphone setup`, never rotates, rate-limited 5/5min). A FIXED code is
@@ -290,6 +294,29 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+// Best-effort push to an ntfy topic (JSON publish handles unicode titles). No-op
+// unless a topic is configured. Failures are logged, never thrown.
+function notifyNtfy(title, message, { priority, tags } = {}) {
+  if (!NTFY_TOPIC) return;
+  const payload = { topic: NTFY_TOPIC, message: message || "" };
+  if (title) payload.title = title;
+  if (priority) payload.priority = priority;
+  if (tags) payload.tags = tags;
+  fetch(NTFY_SERVER, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch((err) => log("warn", `ntfy push failed: ${err.message}`));
+}
+
+// Push an "approval needed" notification from a Claude/PreToolUse hook body.
+function ntfyApproval(body) {
+  const ti = body.tool_input || {};
+  const detail = ti.command || ti.file_path || ti.questions?.[0]?.question || ti.questions?.[0]?.header || "";
+  const tool = body.tool_name || "승인";
+  notifyNtfy("승인 필요", `${tool}${detail ? " · " + String(detail).slice(0, 100) : ""}`, { priority: 5, tags: ["warning"] });
 }
 
 function availableAgentsList() {
@@ -751,6 +778,7 @@ async function surfaceCodexExecApproval(sessionId) {
   codexSyntheticPermissionBySession.set(sessionId, permissionId);
 
   pushSseEvent("permission-request", payload, sessionId);
+  notifyNtfy("승인 필요", `Codex · ${truncateText(candidate.command, 100)}`, { priority: 5, tags: ["warning"] });
 
   log("info", `Surfaced Codex approval ${permissionId} for session ${sessionId}${terminalId ? ` (terminal ${terminalId.slice(0, 8)})` : ambiguousTerminal ? " (AMBIGUOUS terminal — answer will fail closed)" : " (no terminal matched)"}`);
 }
@@ -1574,6 +1602,7 @@ async function handleHookPermission(req, res) {
   pendingPermissionPayloads.set(permissionId, { permissionId, ...body, sessionId: sid });
 
   pushSseEvent("permission-request", { permissionId, ...body }, sid);
+  ntfyApproval(body);
 
   const decision = await waitForPermission(permissionId);
 
@@ -1699,6 +1728,7 @@ async function handleHookTaskComplete(req, res) {
   const sid = resolveHookSession(body);
   log("info", `Hook: TaskCompleted received${sid ? ` session=${sid}` : ""}`);
   pushSseEvent("task-complete", body, sid);
+  notifyNtfy("작업 완료", body.summary ? String(body.summary).slice(0, 200) : "작업이 완료되었습니다.", { priority: 3, tags: ["white_check_mark"] });
   return jsonResponse(res, 200, { ok: true });
 }
 
@@ -1778,6 +1808,7 @@ async function handleHookPreToolUse(req, res) {
 
   pendingPermissionPayloads.set(permissionId, { permissionId, ...body, sessionId: sid });
   pushSseEvent("permission-request", { permissionId, ...body }, sid);
+  ntfyApproval(body);
 
   const decision = await waitForPermission(permissionId);
   const allow = decision.behavior === "allow";

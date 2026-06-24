@@ -46,6 +46,10 @@ const DEFAULTS = {
   // `cmux-iphone setup --rotating` clears fixedCode to opt into rotating.
   pairing: { fixedCode: null, ttlMs: 24 * 60 * 60 * 1000 },
   runner: null, // "cmux" | "launchd" — chosen at setup
+  // Optional ntfy push (https://ntfy.sh or self-hosted) so approvals/completions
+  // reach the phone even when the app is closed — the local-notification path
+  // needs the app connected. Off until a topic is set (config.json or CW_NTFY_TOPIC).
+  ntfy: { server: "https://ntfy.sh", topic: null },
 };
 
 function loadRaw() {
@@ -66,6 +70,7 @@ export function getConfig() {
     ports: { ...DEFAULTS.ports, ...(raw.ports || {}) },
     cmux: { ...DEFAULTS.cmux, ...(raw.cmux || {}) },
     pairing: { ...DEFAULTS.pairing, ...(raw.pairing || {}) },
+    ntfy: { ...DEFAULTS.ntfy, ...(raw.ntfy || {}) },
   };
 }
 
