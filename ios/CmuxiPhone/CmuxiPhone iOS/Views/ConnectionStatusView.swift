@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 // MARK: - Navigation routes
 //
@@ -669,6 +670,9 @@ private struct CmuxTerminalView: View {
     @State private var showModelSheet = false
     @State private var codexDriving = false
     @State private var codexStatus = ""
+    @State private var photoItem: PhotosPickerItem?
+    @State private var attachedImagePath: String?
+    @State private var uploadingImage = false
     @FocusState private var inputFocused: Bool
     private let pollTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -875,30 +879,89 @@ private struct CmuxTerminalView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.hairline, lineWidth: 1))
     }
 
-    private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("프롬프트 입력…", text: $promptText, axis: .vertical)
-                .font(.system(size: 14, design: .monospaced))
-                .foregroundStyle(Color.textPrimary)
-                .tint(Color.claudeOrange)
-                .lineLimit(1...4)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color.surfaceElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.hairline, lineWidth: 1))
-                .focused($inputFocused)
+    private var sendDisabled: Bool {
+        (promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachedImagePath == nil) || sending
+    }
 
-            Button { send() } label: {
-                Image(systemName: sending ? "ellipsis" : "arrow.up")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending
-                                ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+    private var inputBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if attachedImagePath != nil {
+                HStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.claudeOrange)
+                    Text("이미지 첨부됨")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.subtleText)
+                    Spacer()
+                    Button { attachedImagePath = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.subtleText)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.surfaceElevated, in: RoundedRectangle(cornerRadius: 8))
             }
-            .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+
+            HStack(spacing: 8) {
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: uploadingImage ? "ellipsis" : "photo.on.rectangle")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.claudeOrange)
+                        .frame(width: 38, height: 38)
+                        .background(Color.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(uploadingImage)
+
+                TextField("프롬프트 입력…", text: $promptText, axis: .vertical)
+                    .font(.system(size: 14, design: .monospaced))
+                    .foregroundStyle(Color.textPrimary)
+                    .tint(Color.claudeOrange)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.surfaceElevated)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.hairline, lineWidth: 1))
+                    .focused($inputFocused)
+
+                Button { send() } label: {
+                    Image(systemName: sending ? "ellipsis" : "arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(sendDisabled ? Color.subtleText.opacity(0.4) : Color.claudeOrange)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(sendDisabled)
+            }
+        }
+        .onChange(of: photoItem) { _, newItem in
+            guard let newItem else { return }
+            Task { await attachPhoto(newItem) }
+        }
+    }
+
+    // Pick → compress → upload to the bridge, which returns a temp-file path on
+    // the Mac. We keep the path and inject it into the next prompt (Claude reads
+    // image files by path; the TTY channel can't carry the bytes themselves).
+    @MainActor
+    private func attachPhoto(_ item: PhotosPickerItem) async {
+        uploadingImage = true
+        defer { uploadingImage = false; photoItem = nil }
+        guard let raw = try? await item.loadTransferable(type: Data.self) else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
+        let jpeg = compressedJPEGForUpload(raw)
+        if let path = await relayService.uploadImage(jpeg, filename: "image.jpg") {
+            attachedImagePath = path
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 
@@ -906,14 +969,17 @@ private struct CmuxTerminalView: View {
     // Transactional: clear the input only after the bridge accepts it.
     private func send() {
         let t = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, !sending else { return }
+        guard !t.isEmpty || attachedImagePath != nil, !sending else { return }
         sending = true
         inputFocused = false
+        let imagePath = attachedImagePath
         Task {
-            let ok = await relayService.sendCmuxPrompt(terminalId: terminalId, text: t)
+            let payload = imagePath.map { t.isEmpty ? $0 : "\($0)\n\(t)" } ?? t
+            let ok = await relayService.sendCmuxPrompt(terminalId: terminalId, text: payload)
             sending = false
             if ok {
                 promptText = ""
+                attachedImagePath = nil
             } else {
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
@@ -921,6 +987,19 @@ private struct CmuxTerminalView: View {
             await refresh()
         }
     }
+}
+
+// Downscale to a sane dimension and re-encode as JPEG so the base64 upload stays
+// well under the bridge's 4 MB body cap (and HEIC becomes a format Claude reads).
+private func compressedJPEGForUpload(_ data: Data, maxDimension: CGFloat = 2048, quality: CGFloat = 0.6) -> Data {
+    guard let image = UIImage(data: data) else { return data }
+    let size = image.size
+    let scale = min(1, maxDimension / max(size.width, size.height))
+    let target = CGSize(width: size.width * scale, height: size.height * scale)
+    let resized = UIGraphicsImageRenderer(size: target).image { _ in
+        image.draw(in: CGRect(origin: .zero, size: target))
+    }
+    return resized.jpegData(compressionQuality: quality) ?? data
 }
 
 /// Model + effort picker — centered overlay modal, agent-aware.
@@ -1422,6 +1501,39 @@ private struct SessionDetailView: View {
     private func terminalLineView(_ line: TerminalLine) -> some View {
         let text = line.text.isEmpty ? " " : line.text
         switch line.type {
+        case .userPrompt:
+            // What I said — chat bubble pushed to the right.
+            HStack {
+                Spacer(minLength: 36)
+                Text(text.hasPrefix("> ") ? String(text.dropFirst(2)) : text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.claudeOrange, in: RoundedRectangle(cornerRadius: 14))
+            }
+        case .assistant:
+            // The agent's reply — readable prose with a left accent bar, set apart
+            // from the monospaced tool noise.
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.claudeOrange.opacity(0.7))
+                    .frame(width: 3)
+                Text(text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .tool:
+            // A tool action the agent took.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("›")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.claudeAmber)
+                Text(text)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(Color.mutedText)
+            }
         case .command:
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("●")

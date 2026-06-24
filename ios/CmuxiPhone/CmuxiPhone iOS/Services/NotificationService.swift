@@ -4,7 +4,7 @@ import UserNotifications
 /// Converts bridge events into local notifications.
 /// Posts approval-needed and task-complete notifications when the app
 /// is backgrounded, so the user is aware of events requiring attention.
-final class NotificationService {
+final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - Notification identifiers
 
@@ -15,9 +15,24 @@ final class NotificationService {
 
     // MARK: - Init
 
-    init() {
+    override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
         requestAuthorization()
         registerCategories()
+    }
+
+    // MARK: - Foreground presentation
+
+    // Without this, iOS silently suppresses local-notification banners while the
+    // app is in the foreground — a big reason notifications "don't come." Show the
+    // banner (and add to the list + play sound) even when the app is open.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     // MARK: - Authorization

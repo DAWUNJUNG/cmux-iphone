@@ -238,6 +238,31 @@ final class BridgeClient {
         }
     }
 
+    /// Uploads an image to the bridge, which saves it to a temp file and returns
+    /// the absolute path on the Mac. That path is then referenced in a normal
+    /// prompt — Claude Code reads image files by path (the TTY prompt channel
+    /// can't carry binary, but a short path types fine).
+    func uploadImage(data: Data, filename: String) async throws -> String {
+        guard let baseURL, let token else { throw BridgeError.networkError }
+        let url = baseURL.appendingPathComponent("upload")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = ["data": data.base64EncodedString(), "filename": filename]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (respData, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BridgeError.serverError("Upload failed")
+        }
+        let json = try? JSONSerialization.jsonObject(with: respData) as? [String: Any]
+        guard let path = json?["path"] as? String else {
+            throw BridgeError.serverError("No path returned")
+        }
+        return path
+    }
+
     /// Spawns a new agent session.
     func spawnSession(agent: String, cwd: String? = nil) async throws -> String {
         var body: [String: Any] = ["spawn": agent]

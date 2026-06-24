@@ -1962,6 +1962,59 @@ function startCmuxEventStream() {
 }
 
 // ---------------------------------------------------------------------------
+// Image upload
+// ---------------------------------------------------------------------------
+
+// The phone uploads a base64 image; we write it to a temp file and return the
+// absolute path. The prompt channel types into a TTY (can't carry binary), but
+// a short file path types fine — and Claude Code reads image files by path.
+const UPLOAD_DIR = path.join(os.tmpdir(), "cmux-iphone-uploads");
+const ALLOWED_IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"]);
+
+async function handleUpload(req, res) {
+  if (req.method !== "POST") return jsonResponse(res, 405, { error: "Method not allowed" });
+  if (!requireAuth(req)) return jsonResponse(res, 401, { error: "Unauthorized" });
+
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return jsonResponse(res, 400, { error: "Invalid JSON" });
+  }
+
+  const data = body.data;
+  if (typeof data !== "string" || !data) {
+    return jsonResponse(res, 400, { error: "Missing base64 'data'" });
+  }
+
+  // Only the extension of the client filename is trusted; the path itself is a
+  // fresh UUID so a malicious name can't escape UPLOAD_DIR.
+  let ext = path.extname(String(body.filename || "")).toLowerCase();
+  if (!ALLOWED_IMAGE_EXT.has(ext)) ext = ".jpg";
+
+  const buf = Buffer.from(data, "base64");
+  if (!buf.length) return jsonResponse(res, 400, { error: "Empty or invalid image" });
+
+  try {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    // ponytail: best-effort prune of uploads older than a day; OS also clears tmpdir.
+    try {
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      for (const f of fs.readdirSync(UPLOAD_DIR)) {
+        const p = path.join(UPLOAD_DIR, f);
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+      }
+    } catch {}
+    const filePath = path.join(UPLOAD_DIR, `${crypto.randomUUID()}${ext}`);
+    fs.writeFileSync(filePath, buf);
+    log("info", `Upload: saved ${buf.length} bytes -> ${filePath}`);
+    return jsonResponse(res, 200, { ok: true, path: filePath });
+  } catch (err) {
+    return jsonResponse(res, 500, { error: `Save failed: ${err.message}` });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -1969,6 +2022,7 @@ const routes = {
   "GET /": handleWebClient,
   "POST /pair": handlePair,
   "POST /command": handleCommand,
+  "POST /upload": handleUpload,
   "GET /events": handleEvents,
   "POST /hooks/tool-output": handleHookToolOutput,
   "POST /hooks/permission": handleHookPermission,

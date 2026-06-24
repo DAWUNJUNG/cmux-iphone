@@ -186,7 +186,7 @@ class WatchViewState: ObservableObject {
                 for raw in answer.components(separatedBy: "\n") {
                     let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !cleaned.isEmpty {
-                        appendLine(TerminalLine(text: String(cleaned.prefix(80)), type: .output), sessionId: sessionId)
+                        appendLine(TerminalLine(text: String(cleaned.prefix(80)), type: .assistant), sessionId: sessionId)
                     }
                 }
             }
@@ -247,22 +247,22 @@ class WatchViewState: ObservableObject {
             }
         case "Read":
             let path = toolInput["file_path"] as? String ?? ""
-            appendLine(TerminalLine(text: "\(prefix)Read \((path as NSString).lastPathComponent)", type: .system), sessionId: sessionId)
+            appendLine(TerminalLine(text: "\(prefix)Read \((path as NSString).lastPathComponent)", type: .tool), sessionId: sessionId)
         case "Edit":
             let path = toolInput["file_path"] as? String ?? ""
-            appendLine(TerminalLine(text: "\(prefix)Edit \((path as NSString).lastPathComponent)", type: .system), sessionId: sessionId)
+            appendLine(TerminalLine(text: "\(prefix)Edit \((path as NSString).lastPathComponent)", type: .tool), sessionId: sessionId)
         case "Write":
             let path = toolInput["file_path"] as? String ?? ""
-            appendLine(TerminalLine(text: "\(prefix)Write \((path as NSString).lastPathComponent)", type: .system), sessionId: sessionId)
+            appendLine(TerminalLine(text: "\(prefix)Write \((path as NSString).lastPathComponent)", type: .tool), sessionId: sessionId)
         case "Grep":
             let pattern = toolInput["pattern"] as? String ?? ""
-            appendLine(TerminalLine(text: "\(prefix)grep \"\(pattern)\"", type: .command), sessionId: sessionId)
+            appendLine(TerminalLine(text: "\(prefix)grep \"\(pattern)\"", type: .tool), sessionId: sessionId)
         case "CodexMessage":
             if let output = toolOutput {
                 appendLine(TerminalLine(text: "\(prefix)\(String(output.prefix(80)))", type: .output), sessionId: sessionId)
             }
         default:
-            appendLine(TerminalLine(text: "\(prefix)[\(toolName)]", type: .system), sessionId: sessionId)
+            appendLine(TerminalLine(text: "\(prefix)[\(toolName)]", type: .tool), sessionId: sessionId)
         }
         isStreaming = true
 
@@ -451,7 +451,7 @@ class WatchViewState: ObservableObject {
             }
         }.resume()
 
-        appendLine(TerminalLine(text: "→ \(optionLabel)", type: .command), sessionId: sessionId)
+        appendLine(TerminalLine(text: "→ \(optionLabel)", type: .userPrompt), sessionId: sessionId)
         UserDefaults.standard.removeObject(forKey: "watch_pending_permission")
     }
 
@@ -517,7 +517,7 @@ class WatchViewState: ObservableObject {
 
     func sendVoiceCommand(_ text: String, sessionId: String? = nil) {
         let sid = sessionId ?? activeSession?.id
-        appendLine(TerminalLine(text: "> \(text)", type: .command), sessionId: sid)
+        appendLine(TerminalLine(text: "> \(text)", type: .userPrompt), sessionId: sid)
         appendLine(TerminalLine(text: "", type: .thinking), sessionId: sid)
 
         guard let baseURL = bridge.baseURL, let token = bridge.token else { return }

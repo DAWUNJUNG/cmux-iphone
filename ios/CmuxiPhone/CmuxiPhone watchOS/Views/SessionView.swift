@@ -153,11 +153,14 @@ struct SessionView: View {
 
     private func colorFor(_ type: TerminalLine.LineType) -> Color {
         switch type {
-        case .output:   return Theme.Text.primary
-        case .command:  return .white
-        case .system:   return Theme.Text.secondary
-        case .thinking: return Theme.Text.primary.opacity(0.5)
-        case .error:    return Theme.Accent.error
+        case .output:     return Theme.Text.primary
+        case .command:    return .white
+        case .system:     return Theme.Text.secondary
+        case .thinking:   return Theme.Text.primary.opacity(0.5)
+        case .error:      return Theme.Accent.error
+        case .userPrompt: return Theme.Accent.approval
+        case .assistant:  return Theme.Text.primary
+        case .tool:       return Theme.Text.secondary
         }
     }
 }

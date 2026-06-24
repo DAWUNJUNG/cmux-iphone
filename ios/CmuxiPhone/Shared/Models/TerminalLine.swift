@@ -8,11 +8,14 @@ struct TerminalLine: Identifiable, Codable, Equatable {
     let sessionId: String?
 
     enum LineType: String, Codable {
-        case output      // Claude's output
-        case command     // User's command (prefixed with >)
-        case system      // System messages (connected, disconnected, etc.)
+        case output      // Tool result / stdout (subordinate to a tool/command)
+        case command     // A shell command the agent ran ($ ...)
+        case system      // System/feedback messages (connected, stopped, etc.)
         case thinking    // Pulsing cursor indicator
-        case error       // Error messages
+        case error       // Error messages / removed diff lines
+        case userPrompt  // What the user typed or said
+        case assistant   // The agent's reply text (the actual answer)
+        case tool        // A non-shell tool action header (Read/Edit/Write/Grep…)
     }
 
     init(text: String, type: LineType = .output, sessionId: String? = nil) {

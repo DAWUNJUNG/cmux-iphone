@@ -291,6 +291,16 @@ final class RelayService: ObservableObject {
         }
     }
 
+    /// Uploads an image to the bridge and returns the saved temp-file path on the
+    /// Mac (or nil on failure). The caller references that path in a prompt.
+    func uploadImage(_ data: Data, filename: String) async -> String? {
+        do {
+            return try await bridgeClient.uploadImage(data: data, filename: filename)
+        } catch {
+            return nil
+        }
+    }
+
     /// Awaitable cmux text send with explicit submit control — used by the codex
     /// model/effort driver, which types a slash command (submit) then picks rows
     /// with single digits (no submit). Unguarded by design (it drives the screen).
@@ -801,7 +811,7 @@ final class RelayService: ObservableObject {
             try await bridgeClient.sendCommand(text: text + "\n", sessionId: sid)
             // Echo the command into the transcript ONLY after the bridge accepts
             // it — appending before the send duplicated the line on retry.
-            let cmdLine = TerminalLine(text: "> \(text)", type: .command, sessionId: sid)
+            let cmdLine = TerminalLine(text: "> \(text)", type: .userPrompt, sessionId: sid)
             terminalBuffer.append(cmdLine)
             appendToSession(cmdLine, sessionId: sid)
             setThinking(true, sessionId: sid)
@@ -942,19 +952,19 @@ final class RelayService: ObservableObject {
         case "Read":
             let path = toolInput["file_path"] as? String ?? ""
             let filename = (path as NSString).lastPathComponent
-            lines.append(TerminalLine(text: "\(prefix)Read \(filename)", type: .system, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)Read \(filename)", type: .tool, sessionId: sessionId))
 
         case "Write":
             let path = toolInput["file_path"] as? String ?? ""
             let filename = (path as NSString).lastPathComponent
-            lines.append(TerminalLine(text: "\(prefix)Write \(filename)", type: .system, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)Write \(filename)", type: .tool, sessionId: sessionId))
 
         case "Edit":
             let path = toolInput["file_path"] as? String ?? ""
             let filename = (path as NSString).lastPathComponent
             let oldStr = toolInput["old_string"] as? String ?? ""
             let newStr = toolInput["new_string"] as? String ?? ""
-            lines.append(TerminalLine(text: "\(prefix)Edit \(filename)", type: .system, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)Edit \(filename)", type: .tool, sessionId: sessionId))
             if !oldStr.isEmpty {
                 let preview = oldStr.components(separatedBy: "\n").first ?? ""
                 lines.append(TerminalLine(text: "  - \(String(preview.prefix(60)))", type: .error, sessionId: sessionId))
@@ -966,7 +976,7 @@ final class RelayService: ObservableObject {
 
         case "Grep":
             let pattern = toolInput["pattern"] as? String ?? ""
-            lines.append(TerminalLine(text: "\(prefix)grep \"\(pattern)\"", type: .command, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)grep \"\(pattern)\"", type: .tool, sessionId: sessionId))
             if let output = toolOutput, !output.isEmpty {
                 let resultLines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
                 lines.append(TerminalLine(text: "  \(resultLines.count) matches", type: .system, sessionId: sessionId))
@@ -974,7 +984,7 @@ final class RelayService: ObservableObject {
 
         case "Glob":
             let pattern = toolInput["pattern"] as? String ?? ""
-            lines.append(TerminalLine(text: "\(prefix)find \"\(pattern)\"", type: .command, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)find \"\(pattern)\"", type: .tool, sessionId: sessionId))
 
         case "CodexMessage":
             if let output = toolOutput {
@@ -982,7 +992,7 @@ final class RelayService: ObservableObject {
             }
 
         default:
-            lines.append(TerminalLine(text: "\(prefix)[\(toolName)]", type: .system, sessionId: sessionId))
+            lines.append(TerminalLine(text: "\(prefix)[\(toolName)]", type: .tool, sessionId: sessionId))
             if let output = toolOutput {
                 let preview = String(output.prefix(100)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !preview.isEmpty {
@@ -1036,7 +1046,7 @@ final class RelayService: ObservableObject {
         if let answer = json?["assistantText"] as? String,
            !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             for raw in answer.components(separatedBy: "\n") {
-                let line = TerminalLine(text: raw, type: .output, sessionId: sessionId)
+                let line = TerminalLine(text: raw, type: .assistant, sessionId: sessionId)
                 terminalBuffer.append(line)
                 appendToSession(line, sessionId: sessionId)
                 pendingTerminalLines.append(line)
