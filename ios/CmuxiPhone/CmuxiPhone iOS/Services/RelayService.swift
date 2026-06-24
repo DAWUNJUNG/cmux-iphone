@@ -530,6 +530,9 @@ final class RelayService: ObservableObject {
         case "permission-sync":
             handlePermissionSync(data, bridgeID: bridgeID)
 
+        case "history":
+            handleHistory(data, bridgeID: bridgeID)
+
         case "session":
             handleSessionEvent(data, bridgeID: bridgeID)
 
@@ -1005,6 +1008,25 @@ final class RelayService: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Backfill a session's chat with the recent conversation the bridge parsed
+    /// from the transcript (sent on connect), so opening the app shows history /
+    /// progress instead of a blank screen. Seeds only when empty so it never
+    /// clobbers a session we're already streaming live.
+    private func handleHistory(_ data: String, bridgeID: UUID) {
+        guard let json = parseJSON(data),
+              let sid = json["sessionId"] as? String,
+              let rawLines = json["lines"] as? [[String: Any]],
+              let idx = sessions.firstIndex(where: { $0.id == sid && $0.bridgeID == bridgeID }),
+              sessions[idx].terminalLines.isEmpty else { return }
+
+        let mapped: [TerminalLine] = rawLines.compactMap { item in
+            guard let text = item["text"] as? String, !text.isEmpty else { return nil }
+            let type = TerminalLine.LineType(rawValue: item["type"] as? String ?? "output") ?? .output
+            return TerminalLine(text: text, type: type, sessionId: sid)
+        }
+        if !mapped.isEmpty { sessions[idx].terminalLines = mapped }
     }
 
     private func appendToSession(_ line: TerminalLine, sessionId: String?) {

@@ -1519,7 +1519,9 @@ function handleEvents(req, res) {
     res.write(formatSseMessage({ id: sseEventId, event: "permission-request", data: JSON.stringify(payload) }));
   }
 
-  // Send current sessions state so late-connecting clients see existing sessions
+  // Send current sessions state so late-connecting clients see existing sessions,
+  // then backfill each one's recent conversation from its transcript so the app
+  // shows history/progress instead of a blank chat on connect.
   for (const [sid, slot] of sessions) {
     if (slot.state === "running") {
       const syncEntry = formatSseMessage({
@@ -1534,6 +1536,19 @@ function handleEvents(req, res) {
         }),
       });
       try { res.write(syncEntry); } catch { /* ignore */ }
+
+      if (slot.transcriptPath) {
+        const history = readRecentTranscript(slot.transcriptPath);
+        if (history.length) {
+          try {
+            res.write(formatSseMessage({
+              id: sseEventId++,
+              event: "history",
+              data: JSON.stringify({ sessionId: sid, lines: history }),
+            }));
+          } catch { /* ignore */ }
+        }
+      }
     }
   }
 
@@ -1646,6 +1661,7 @@ async function handleHookToolOutput(req, res) {
 
   const sid = resolveHookSession(body);
   const source = body.source || "claude";
+  rememberTranscript(sid, body); // so a reconnecting app can backfill chat history
   log("info", `Hook: ${source === "codex" ? "Codex" : "PostToolUse"} received [${source}]${sid ? ` session=${sid}` : ""}`, body.tool_name || "");
   pushSseEvent("tool-output", { ...body, source }, sid);
   // A tool ran ⇒ any approval that gated it is already resolved (incl. answered
@@ -1786,6 +1802,65 @@ function extractFinalAssistantTurn(transcriptPath) {
   return empty;
 }
 
+// Stash a session's transcript path (from any hook that carries it) so a
+// reconnecting app can be backfilled with the recent conversation.
+function rememberTranscript(sid, body) {
+  const slot = sid && sessions.get(sid);
+  if (slot && body && body.transcript_path) slot.transcriptPath = body.transcript_path;
+}
+
+// A concise one-line label for a tool_use block (mirrors the app's tool rows).
+function toolSummary(name, input = {}) {
+  const inp = input || {};
+  const base = (p) => (p ? path.basename(String(p)) : "");
+  switch (name) {
+    case "Bash":      return `$ ${inp.command || ""}`;
+    case "Read":      return `Read ${base(inp.file_path)}`;
+    case "Write":     return `Write ${base(inp.file_path)}`;
+    case "Edit":
+    case "MultiEdit": return `Edit ${base(inp.file_path)}`;
+    case "Grep":      return `grep "${inp.pattern || ""}"`;
+    case "Glob":      return `find "${inp.pattern || ""}"`;
+    case "Task":      return `서브에이전트 [${inp.subagent_type || "agent"}]${inp.description ? " · " + inp.description : ""}`;
+    default:          return `[${name}]`;
+  }
+}
+
+// Parse the tail of a session transcript (JSONL) into typed chat lines, so a
+// freshly-connected app can SHOW the recent conversation instead of a blank
+// screen. Roles match the app's TerminalLine.LineType raw values.
+function readRecentTranscript(transcriptPath, maxLines = 60) {
+  if (!transcriptPath || typeof transcriptPath !== "string") return [];
+  let raw;
+  try { raw = fs.readFileSync(transcriptPath, "utf8"); } catch { return []; }
+  const tail = raw.split("\n").slice(-400); // recent only — bounds the work
+  const lines = [];
+  for (const line of tail) {
+    const s = line.trim();
+    if (!s) continue;
+    let entry;
+    try { entry = JSON.parse(s); } catch { continue; }
+    if (entry.isSidechain || entry.isMeta) continue; // skip sub-agent internals / meta
+    const content = entry.message?.content;
+    if (entry.type === "user") {
+      if (typeof content === "string") {
+        const t = content.trim();
+        if (t && !t.startsWith("<")) lines.push({ type: "userPrompt", text: t }); // skip system/command wrappers
+      }
+    } else if (entry.type === "assistant" && Array.isArray(content)) {
+      for (const b of content) {
+        if (!b) continue;
+        if (b.type === "text" && b.text?.trim()) lines.push({ type: "assistant", text: b.text.trim() });
+        else if (b.type === "thinking" && b.thinking?.trim()) lines.push({ type: "reasoning", text: b.thinking.trim() });
+        else if (b.type === "tool_use" && b.name) {
+          lines.push({ type: b.name === "Task" ? "subagent" : "tool", text: toolSummary(b.name, b.input) });
+        }
+      }
+    }
+  }
+  return lines.slice(-maxLines).map((l) => ({ type: l.type, text: String(l.text).slice(0, 2000) }));
+}
+
 async function handleHookStop(req, res) {
   if (req.method !== "POST") return jsonResponse(res, 405, { error: "Method not allowed" });
   let body;
@@ -1796,6 +1871,7 @@ async function handleHookStop(req, res) {
   }
 
   const sid = resolveHookSession(body);
+  rememberTranscript(sid, body); // remember the transcript for history backfill
   log("info", `Hook: Stop received${sid ? ` session=${sid}` : ""}`);
 
   // Turn ended ⇒ no approval can still be genuinely pending for this session.
