@@ -1634,10 +1634,23 @@ async function handleHookPermission(req, res) {
   // Keep the full payload so it can be re-sent to clients that (re)connect.
   pendingPermissionPayloads.set(permissionId, { permissionId, ...body, sessionId: sid });
 
+  // If Claude closes this request before we answer (the user allowed/denied
+  // directly in the terminal on the Mac), the decision was made there — clear the
+  // phone's card NOW instead of leaving it pending until the 10-minute timeout.
+  let answered = false;
+  res.on("close", () => {
+    if (answered) return;
+    if (resolvePermission(permissionId, { behavior: "allow", reason: "answered-in-terminal" })) {
+      log("info", `Hook: PermissionRequest ${permissionId} aborted (answered in terminal) — card cleared`);
+    }
+  });
+
   pushSseEvent("permission-request", { permissionId, ...body }, sid);
   ntfyApproval(body, sid);
 
   const decision = await waitForPermission(permissionId);
+  answered = true;
+  if (res.destroyed) return; // connection already closed (terminal answer) — nothing to reply to
 
   log("info", `Hook: PermissionRequest resolved (id: ${permissionId}): ${decision.behavior}`);
 
@@ -1840,10 +1853,23 @@ async function handleHookPreToolUse(req, res) {
   log("info", `Hook: PreToolUse (supervise) ${permissionId}${sid ? ` session=${sid}` : ""}`, body.tool_name || "");
 
   pendingPermissionPayloads.set(permissionId, { permissionId, ...body, sessionId: sid });
+
+  // Clear the phone's card if Claude closes this request before we answer (the
+  // user decided in the terminal), instead of waiting out the 10-minute timeout.
+  let answered = false;
+  res.on("close", () => {
+    if (answered) return;
+    if (resolvePermission(permissionId, { behavior: "allow", reason: "answered-in-terminal" })) {
+      log("info", `Hook: PreToolUse ${permissionId} aborted (answered in terminal) — card cleared`);
+    }
+  });
+
   pushSseEvent("permission-request", { permissionId, ...body }, sid);
   ntfyApproval(body, sid);
 
   const decision = await waitForPermission(permissionId);
+  answered = true;
+  if (res.destroyed) return; // connection already closed (terminal answer)
   const allow = decision.behavior === "allow";
   log("info", `Hook: PreToolUse ${permissionId} -> ${allow ? "allow" : "deny"}`);
   return jsonResponse(res, 200, {
