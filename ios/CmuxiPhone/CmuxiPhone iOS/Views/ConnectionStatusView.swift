@@ -136,6 +136,14 @@ struct ConnectionStatusView: View {
                 showApprovalQueue = false
             }
         }
+        .onChange(of: relayService.navigateToSessionId) { _, sid in
+            // A notification deep link resolved to a session — jump straight to it.
+            guard let sid else { return }
+            var newPath = NavigationPath()
+            newPath.append(SessionRoute(sessionId: sid))
+            path = newPath
+            relayService.navigateToSessionId = nil
+        }
         .alert("오피스 이름 변경", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }

@@ -22,6 +22,7 @@ struct CmuxiPhoneApp: App {
             .environmentObject(sessionManager)
             .environmentObject(relayService)
             .preferredColorScheme(.dark)
+            .onOpenURL { relayService.handleDeepLink($0) }
         }
     }
 }

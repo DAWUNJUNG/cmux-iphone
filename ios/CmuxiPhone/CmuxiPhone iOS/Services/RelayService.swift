@@ -76,6 +76,12 @@ final class RelayService: ObservableObject {
     /// (the Mac whose detail is on screen). Per-session routing ignores this.
     @Published var focusedBridgeID: UUID?
 
+    /// Set when a notification deep link resolves to a loaded session — the root
+    /// view observes this to navigate to that session, then clears it.
+    @Published var navigateToSessionId: String?
+    /// A deep-link target waiting for its session to arrive (cold-launch case).
+    private var pendingDeepLinkSessionId: String?
+
     private let fallbackClient = BridgeClient() // ponytail: inert stand-in; real calls go through a connection
     /// The focused bridge's client — for non-session-scoped calls (cmux, supervise,
     /// status). Falls back to an inert client when nothing is connected.
@@ -223,6 +229,33 @@ final class RelayService: ObservableObject {
         case .connecting:  return .connecting
         case .disconnected: return .disconnected
         }
+    }
+
+    // MARK: - Deep links (notification tap → session)
+
+    /// Handle a `cmuxiphone://session/<sessionId>` URL from an ntfy notification.
+    /// The session id is globally unique, so we find its Mac, focus it, and route
+    /// there — even if the app cold-launched and the session hasn't loaded yet.
+    func handleDeepLink(_ url: URL) {
+        guard url.scheme == "cmuxiphone", url.host == "session" else { return }
+        guard let sessionId = url.pathComponents.first(where: { $0 != "/" }), !sessionId.isEmpty else { return }
+        pendingDeepLinkSessionId = sessionId
+        resolvePendingDeepLink()
+        // Stop waiting after a cold-launch grace period so a late session can't
+        // trigger a surprise navigation long after the tap.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            if self?.pendingDeepLinkSessionId == sessionId { self?.pendingDeepLinkSessionId = nil }
+        }
+    }
+
+    /// Route to the pending deep-link session once it exists: focus its Mac and
+    /// signal the root view to navigate. Re-tried as sessions arrive.
+    private func resolvePendingDeepLink() {
+        guard let sid = pendingDeepLinkSessionId,
+              let session = sessions.first(where: { $0.id == sid }) else { return }
+        if let bid = session.bridgeID { focusedBridgeID = bid }
+        pendingDeepLinkSessionId = nil
+        navigateToSessionId = sid
     }
 
     // MARK: - Pairing
@@ -941,6 +974,7 @@ final class RelayService: ObservableObject {
             break
         }
 
+        resolvePendingDeepLink()   // a cold-launch deep link may be waiting for this session
         updateWatchState()
     }
 
