@@ -1384,6 +1384,8 @@ private struct SessionDetailView: View {
     @State private var promptText = ""
     @State private var messageText = ""
     @State private var isSending = false
+    @State private var loadingHistory = false
+    @State private var fullLoaded = false
     @FocusState private var isPromptFocused: Bool
     @FocusState private var isMessageFocused: Bool
     private let cursorTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
@@ -1467,6 +1469,31 @@ private struct SessionDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
+                    if !fullLoaded {
+                        Button {
+                            loadingHistory = true
+                            Task {
+                                await relayService.loadFullHistory(sessionId: session.id)
+                                fullLoaded = true
+                                loadingHistory = false
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if loadingHistory {
+                                    ProgressView().scaleEffect(0.7)
+                                } else {
+                                    Image(systemName: "arrow.up.circle")
+                                }
+                                Text(loadingHistory ? "불러오는 중…" : "전체 대화 불러오기")
+                                    .font(.system(size: 12))
+                            }
+                            .foregroundStyle(Color.subtleText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(loadingHistory)
+                    }
                     ForEach(session.terminalLines) { line in
                         terminalLineView(line)
                             .frame(maxWidth: .infinity, alignment: .leading)

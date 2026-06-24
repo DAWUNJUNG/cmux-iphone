@@ -1029,12 +1029,29 @@ final class RelayService: ObservableObject {
         if !mapped.isEmpty { sessions[idx].terminalLines = mapped }
     }
 
+    /// Load the FULL conversation history for a session (on-demand) and replace
+    /// its chat with it — for reviewing long-running work. Returns false on failure.
+    @discardableResult
+    func loadFullHistory(sessionId: String) async -> Bool {
+        let bid = sessions.first(where: { $0.id == sessionId })?.bridgeID
+        let api = conn(bid)?.client ?? bridgeClient
+        guard let raw = try? await api.fetchHistory(sessionId: sessionId), !raw.isEmpty,
+              let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return false }
+        sessions[idx].terminalLines = raw.compactMap { item in
+            guard let text = item["text"], !text.isEmpty else { return nil }
+            let type = TerminalLine.LineType(rawValue: item["type"] ?? "output") ?? .output
+            return TerminalLine(text: text, type: type, sessionId: sessionId)
+        }
+        return true
+    }
+
     private func appendToSession(_ line: TerminalLine, sessionId: String?) {
         guard let sid = sessionId,
               let idx = sessions.firstIndex(where: { $0.id == sid }) else { return }
         sessions[idx].terminalLines.append(line)
-        if sessions[idx].terminalLines.count > 500 {
-            sessions[idx].terminalLines.removeFirst(sessions[idx].terminalLines.count - 500)
+        // Cap high enough that a loaded full history isn't trimmed away by live events.
+        if sessions[idx].terminalLines.count > 3000 {
+            sessions[idx].terminalLines.removeFirst(sessions[idx].terminalLines.count - 3000)
         }
     }
 

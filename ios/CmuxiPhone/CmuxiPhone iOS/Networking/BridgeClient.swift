@@ -272,6 +272,27 @@ final class BridgeClient {
         return path
     }
 
+    /// Fetches the FULL parsed conversation history for a session (on-demand
+    /// "load full" — for reviewing long runs). Returns typed {type,text} lines.
+    func fetchHistory(sessionId: String) async throws -> [[String: String]] {
+        guard let baseURL, let token else { throw BridgeError.networkError }
+        var comps = URLComponents(url: baseURL.appendingPathComponent("history"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
+        guard let url = comps?.url else { throw BridgeError.networkError }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BridgeError.networkError
+        }
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let lines = (json?["lines"] as? [[String: Any]]) ?? []
+        return lines.compactMap { item in
+            guard let type = item["type"] as? String, let text = item["text"] as? String else { return nil }
+            return ["type": type, "text": text]
+        }
+    }
+
     /// Spawns a new agent session.
     func spawnSession(agent: String, cwd: String? = nil) async throws -> String {
         var body: [String: Any] = ["spawn": agent]

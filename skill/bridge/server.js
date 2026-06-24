@@ -1829,13 +1829,14 @@ function toolSummary(name, input = {}) {
 // Parse the tail of a session transcript (JSONL) into typed chat lines, so a
 // freshly-connected app can SHOW the recent conversation instead of a blank
 // screen. Roles match the app's TerminalLine.LineType raw values.
-function readRecentTranscript(transcriptPath, maxLines = 60) {
+function readRecentTranscript(transcriptPath, { tailLines = 400, maxLines = 60 } = {}) {
   if (!transcriptPath || typeof transcriptPath !== "string") return [];
   let raw;
   try { raw = fs.readFileSync(transcriptPath, "utf8"); } catch { return []; }
-  const tail = raw.split("\n").slice(-400); // recent only — bounds the work
+  const all = raw.split("\n");
+  const scan = tailLines > 0 ? all.slice(-tailLines) : all; // tailLines:0 ⇒ whole file
   const lines = [];
-  for (const line of tail) {
+  for (const line of scan) {
     const s = line.trim();
     if (!s) continue;
     let entry;
@@ -2160,6 +2161,19 @@ async function handleCmuxTree(req, res) {
 }
 
 // GET /cmux/screen?id=<terminalId> — plain-text screen of one cmux terminal.
+// Full conversation history for a session (on-demand "load full"), parsed from
+// the whole transcript — not just the connect-time tail. For reviewing long runs.
+async function handleHistoryFetch(req, res) {
+  if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (!authOk(req, url)) return jsonResponse(res, 401, { error: "Unauthorized" });
+  const sid = url.searchParams.get("sessionId");
+  const slot = sid && sessions.get(sid);
+  if (!slot || !slot.transcriptPath) return jsonResponse(res, 200, { sessionId: sid || null, lines: [] });
+  const lines = readRecentTranscript(slot.transcriptPath, { tailLines: 0, maxLines: 3000 });
+  return jsonResponse(res, 200, { sessionId: sid, lines });
+}
+
 async function handleCmuxScreen(req, res) {
   if (req.method !== "GET") return jsonResponse(res, 405, { error: "Method not allowed" });
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -2287,6 +2301,7 @@ const routes = {
   "GET /pair-code": handlePairCode,
   "GET /cmux/tree": handleCmuxTree,
   "GET /cmux/screen": handleCmuxScreen,
+  "GET /history": handleHistoryFetch,
 };
 
 function isLocalRequest(req) {
