@@ -1026,6 +1026,34 @@ function readFirstCwd(filePath, size) {
   return null;
 }
 
+// A human label for a session so the app can tell several "claude" sessions
+// apart: Claude Code's own auto title (latest ai-title entry), else the first
+// user prompt. Reads only the file's tail/head to stay cheap.
+function readSessionTitle(transcriptPath, size) {
+  try {
+    const tailStart = Math.max(0, size - 64 * 1024);
+    const tail = readFileSlice(transcriptPath, tailStart, size - tailStart).split("\n");
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const s = tail[i].trim(); if (!s) continue;
+      try { const e = JSON.parse(s); if (e.type === "ai-title" && e.aiTitle) return String(e.aiTitle).trim().slice(0, 80); } catch { /* partial line */ }
+    }
+  } catch { /* ignore */ }
+  try {
+    const head = readFileSlice(transcriptPath, 0, Math.min(size, 64 * 1024)).split("\n");
+    for (const line of head) {
+      const s = line.trim(); if (!s) continue;
+      try {
+        const e = JSON.parse(s);
+        if (e.type === "user" && typeof e.message?.content === "string") {
+          const t = e.message.content.trim();
+          if (t && !t.startsWith("<")) return t.replace(/\s+/g, " ").slice(0, 80);
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function scanClaudeSessions() {
   const rootStat = safeStat(CLAUDE_PROJECTS_ROOT);
   if (!rootStat || !rootStat.isDirectory()) return;
@@ -1035,19 +1063,24 @@ function scanClaudeSessions() {
 
   for (const f of recent) {
     const sessionId = path.basename(f.filePath).replace(/\.jsonl$/, "");
+    const title = readSessionTitle(f.filePath, f.size);
     const existing = sessions.get(sessionId);
     if (existing) {
       existing.transcriptPath = f.filePath; // pin the real transcript so backfill reads the right file
+      if (title && existing.title !== title) {
+        existing.title = title;
+        pushSseEvent("session", { state: "running", agent: existing.agent, cwd: existing.cwd, folderName: existing.folderName, sessionId, title }, sessionId);
+      }
       continue;
     }
     const cwd = readFirstCwd(f.filePath, f.size) || CLAUDE_PROJECTS_ROOT;
     const folderName = path.basename(cwd) || cwd;
     sessions.set(sessionId, {
-      id: sessionId, agent: "claude", cwd, folderName,
+      id: sessionId, agent: "claude", cwd, folderName, title,
       ptyProcess: null, state: "running", createdAt: f.mtimeMs, transcriptPath: f.filePath,
     });
-    pushSseEvent("session", { state: "running", agent: "claude", cwd, folderName, sessionId }, sessionId);
-    log("info", `Discovered Claude session ${sessionId.slice(0, 8)} (${folderName}) from disk`);
+    pushSseEvent("session", { state: "running", agent: "claude", cwd, folderName, sessionId, title }, sessionId);
+    log("info", `Discovered Claude session ${sessionId.slice(0, 8)} (${folderName}) "${title || ""}"`);
   }
 }
 
@@ -1593,6 +1626,7 @@ function handleEvents(req, res) {
           cwd: slot.cwd,
           folderName: slot.folderName,
           sessionId: sid,
+          title: slot.title,
         }),
       });
       try { res.write(syncEntry); } catch { /* ignore */ }

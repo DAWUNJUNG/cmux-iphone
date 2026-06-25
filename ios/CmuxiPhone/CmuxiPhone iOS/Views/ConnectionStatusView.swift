@@ -1311,9 +1311,11 @@ private struct SessionsListView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(session.agent.rawValue.capitalized)
+                    Text(session.title.flatMap { $0.isEmpty ? nil : $0 } ?? session.agent.rawValue.capitalized)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if hasApproval {
                         Text("승인")
                             .font(.system(size: 9, weight: .bold))
@@ -1447,9 +1449,11 @@ private struct SessionDetailView: View {
         return HStack(spacing: 12) {
             sessionAvatar(session.agent, size: session.agent == .claude ? 28 : 24)
             VStack(alignment: .leading, spacing: 3) {
-                Text(session.agent.rawValue.capitalized)
+                Text(session.title.flatMap { $0.isEmpty ? nil : $0 } ?? session.agent.rawValue.capitalized)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 HStack(spacing: 6) {
                     Circle().fill(dot).frame(width: 8, height: 8)
                     Text("\(label) · \(workspaceKey(session))")

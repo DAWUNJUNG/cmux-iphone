@@ -1063,6 +1063,7 @@ final class RelayService: ObservableObject {
         let agent = json["agent"] as? String
         let cwd = json["cwd"] as? String ?? ""
         let folderName = json["folderName"] as? String ?? ""
+        let title = json["title"] as? String
 
         switch state {
         case "running":
@@ -1070,12 +1071,15 @@ final class RelayService: ObservableObject {
             if let sid = sessionId {
                 if let idx = sessions.firstIndex(where: { $0.id == sid && $0.bridgeID == bridgeID }) {
                     sessions[idx].activity = .running
+                    if let title { sessions[idx].title = title }
                 } else {
                     let agentType = AgentType(rawValue: agent ?? "claude") ?? .claude
-                    sessions.append(AgentSession(
+                    var s = AgentSession(
                         id: sid, agent: agentType, cwd: cwd,
                         folderName: folderName, activity: .running, bridgeID: bridgeID
-                    ))
+                    )
+                    s.title = title
+                    sessions.append(s)
                 }
             }
         case "ended":

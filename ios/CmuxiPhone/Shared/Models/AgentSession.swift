@@ -19,6 +19,9 @@ struct AgentSession: Identifiable, Codable, Equatable {
     /// Which paired Mac (bridge) this session belongs to. nil on the watch and
     /// for legacy single-bridge state; set by RelayService when connecting N Macs.
     var bridgeID: UUID? = nil
+    /// Human label (Claude's auto title / first prompt) so several "claude"
+    /// sessions are distinguishable. nil falls back to the agent name.
+    var title: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, agent, cwd, folderName, activity
