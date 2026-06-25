@@ -1066,17 +1066,20 @@ final class RelayService: ObservableObject {
         let title = json["title"] as? String
 
         switch state {
-        case "running":
-            sessionStartDate = Date()
+        case "running", "idle":
+            // "idle" = recently used but not actively writing (disk-discovered) —
+            // shown but greyed, so a closed session isn't mistaken for live.
+            let activity: SessionActivity = (state == "running") ? .running : .idle
+            if state == "running" { sessionStartDate = Date() }
             if let sid = sessionId {
                 if let idx = sessions.firstIndex(where: { $0.id == sid && $0.bridgeID == bridgeID }) {
-                    sessions[idx].activity = .running
+                    if sessions[idx].activity != .waitingApproval { sessions[idx].activity = activity }
                     if let title { sessions[idx].title = title }
                 } else {
                     let agentType = AgentType(rawValue: agent ?? "claude") ?? .claude
                     var s = AgentSession(
                         id: sid, agent: agentType, cwd: cwd,
-                        folderName: folderName, activity: .running, bridgeID: bridgeID
+                        folderName: folderName, activity: activity, bridgeID: bridgeID
                     )
                     s.title = title
                     sessions.append(s)

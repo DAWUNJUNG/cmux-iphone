@@ -1014,7 +1014,8 @@ function scanCodexSessionFiles() {
 // sessions and pin each one's REAL transcript (for history backfill), keyed by
 // the actual session id — independent of hooks.
 const CLAUDE_PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
-const CLAUDE_SESSION_LOOKBACK_MS = 60 * 60 * 1000; // surface sessions touched in the last hour
+const CLAUDE_SESSION_LOOKBACK_MS = 30 * 60 * 1000; // findable (running OR idle) for 30 min
+const CLAUDE_ACTIVE_WINDOW_MS = 3 * 60 * 1000;     // "running" only if its transcript moved in the last 3 min
 
 function readFirstCwd(filePath, size) {
   const header = readFileSlice(filePath, 0, Math.min(size, 32 * 1024));
@@ -1064,12 +1065,18 @@ function scanClaudeSessions() {
   for (const f of recent) {
     const sessionId = path.basename(f.filePath).replace(/\.jsonl$/, "");
     const title = readSessionTitle(f.filePath, f.size);
+    // Actively writing ⇒ running; recently used but quiet ⇒ idle (so a closed
+    // session isn't shown as live, but is still findable for review).
+    const state = now - f.mtimeMs < CLAUDE_ACTIVE_WINDOW_MS ? "running" : "idle";
     const existing = sessions.get(sessionId);
     if (existing) {
       existing.transcriptPath = f.filePath; // pin the real transcript so backfill reads the right file
-      if (title && existing.title !== title) {
-        existing.title = title;
-        pushSseEvent("session", { state: "running", agent: existing.agent, cwd: existing.cwd, folderName: existing.folderName, sessionId, title }, sessionId);
+      const titleChanged = title && existing.title !== title;
+      const stateChanged = existing.state !== state;
+      if (titleChanged) existing.title = title;
+      if (stateChanged) existing.state = state;
+      if (titleChanged || stateChanged) {
+        pushSseEvent("session", { state: existing.state, agent: existing.agent, cwd: existing.cwd, folderName: existing.folderName, sessionId, title: existing.title }, sessionId);
       }
       continue;
     }
@@ -1077,10 +1084,10 @@ function scanClaudeSessions() {
     const folderName = path.basename(cwd) || cwd;
     sessions.set(sessionId, {
       id: sessionId, agent: "claude", cwd, folderName, title,
-      ptyProcess: null, state: "running", createdAt: f.mtimeMs, transcriptPath: f.filePath,
+      ptyProcess: null, state, createdAt: f.mtimeMs, transcriptPath: f.filePath,
     });
-    pushSseEvent("session", { state: "running", agent: "claude", cwd, folderName, sessionId, title }, sessionId);
-    log("info", `Discovered Claude session ${sessionId.slice(0, 8)} (${folderName}) "${title || ""}"`);
+    pushSseEvent("session", { state, agent: "claude", cwd, folderName, sessionId, title }, sessionId);
+    log("info", `Discovered Claude session ${sessionId.slice(0, 8)} (${folderName}) [${state}] "${title || ""}"`);
   }
 }
 
@@ -1616,12 +1623,12 @@ function handleEvents(req, res) {
   // then backfill each one's recent conversation from its transcript so the app
   // shows history/progress instead of a blank chat on connect.
   for (const [sid, slot] of sessions) {
-    if (slot.state === "running") {
+    if (slot.state === "running" || slot.state === "idle") {
       const syncEntry = formatSseMessage({
         id: sseEventId++,
         event: "session",
         data: JSON.stringify({
-          state: "running",
+          state: slot.state,
           agent: slot.agent,
           cwd: slot.cwd,
           folderName: slot.folderName,
