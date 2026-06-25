@@ -1006,6 +1006,51 @@ function scanCodexSessionFiles() {
   }
 }
 
+// --- Claude session discovery (transcript files) ---------------------------
+// Claude Code never tells the bridge a session exists until a hook fires, so an
+// idle session — or one whose hooks didn't reach us (workflows, sub-agents) — is
+// invisible and un-instructable. Claude writes every session to
+// ~/.claude/projects/<cwd>/<session-id>.jsonl, so scan that to DISCOVER recent
+// sessions and pin each one's REAL transcript (for history backfill), keyed by
+// the actual session id — independent of hooks.
+const CLAUDE_PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
+const CLAUDE_SESSION_LOOKBACK_MS = 60 * 60 * 1000; // surface sessions touched in the last hour
+
+function readFirstCwd(filePath, size) {
+  const header = readFileSlice(filePath, 0, Math.min(size, 32 * 1024));
+  for (const line of header.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    try { const e = JSON.parse(s); if (e.cwd) return e.cwd; } catch { /* skip */ }
+  }
+  return null;
+}
+
+function scanClaudeSessions() {
+  const rootStat = safeStat(CLAUDE_PROJECTS_ROOT);
+  if (!rootStat || !rootStat.isDirectory()) return;
+  const now = Date.now();
+  const recent = listRecentCodexSessionFiles(CLAUDE_PROJECTS_ROOT) // generic recent-.jsonl lister
+    .filter((f) => now - f.mtimeMs <= CLAUDE_SESSION_LOOKBACK_MS);
+
+  for (const f of recent) {
+    const sessionId = path.basename(f.filePath).replace(/\.jsonl$/, "");
+    const existing = sessions.get(sessionId);
+    if (existing) {
+      existing.transcriptPath = f.filePath; // pin the real transcript so backfill reads the right file
+      continue;
+    }
+    const cwd = readFirstCwd(f.filePath, f.size) || CLAUDE_PROJECTS_ROOT;
+    const folderName = path.basename(cwd) || cwd;
+    sessions.set(sessionId, {
+      id: sessionId, agent: "claude", cwd, folderName,
+      ptyProcess: null, state: "running", createdAt: f.mtimeMs, transcriptPath: f.filePath,
+    });
+    pushSseEvent("session", { state: "running", agent: "claude", cwd, folderName, sessionId }, sessionId);
+    log("info", `Discovered Claude session ${sessionId.slice(0, 8)} (${folderName}) from disk`);
+  }
+}
+
 async function consumeCodexLogChunk(text) {
   const combined = codexLogState.remainder + text;
   const lines = combined.split("\n");
@@ -1086,11 +1131,14 @@ async function reconcileCodexApprovals() {
   }
 }
 
+let claudeScanTick = 0;
+
 function startCodexMonitor() {
   if (codexMonitorInterval) return;
 
   scanCodexSessionFiles();
   scanCodexLog().catch((err) => log("warn", `Codex log scan failed: ${err.message}`));
+  try { scanClaudeSessions(); } catch (err) { log("warn", `Claude session scan failed: ${err.message}`); }
 
   codexMonitorInterval = setInterval(() => {
     try {
@@ -1100,6 +1148,11 @@ function startCodexMonitor() {
     }
     scanCodexLog().catch((err) => log("warn", `Codex log scan failed: ${err.message}`));
     reconcileCodexApprovals().catch((err) => log("warn", `Codex approval reconcile failed: ${err.message}`));
+    // Discover Claude sessions less often (every ~3 ticks) — statting the whole
+    // ~/.claude/projects tree each tick is wasteful.
+    if (++claudeScanTick % 3 === 0) {
+      try { scanClaudeSessions(); } catch (err) { log("warn", `Claude session scan failed: ${err.message}`); }
+    }
   }, CODEX_SESSION_SCAN_INTERVAL_MS);
 }
 
@@ -1403,9 +1456,12 @@ async function handleCommand(req, res) {
           return jsonResponse(res, 500, { error: `No binary found for ${targetSession.agent}` });
         }
 
+        // Resume the SPECIFIC session id (not --continue's "most recent in cwd",
+        // which targets the wrong one when several sessions / sub-agents / a
+        // workflow share the cwd). Lands the prompt in this session's transcript.
         const args = targetSession.agent === "codex"
           ? ["exec", promptText]
-          : ["-p", promptText, "--continue"];
+          : ["-p", promptText, "--resume", targetSession.id];
 
         log("info", `Running ${targetSession.agent} prompt in ${targetSession.cwd} (${promptText.length} chars)`);
 
@@ -1487,6 +1543,10 @@ function handleEvents(req, res) {
   if (!tokenOk) {
     return jsonResponse(res, 401, { error: "Unauthorized" });
   }
+
+  // Refresh disk-discovered Claude sessions so the connecting app sees current
+  // sessions (incl. ones no hook told us about) in the sync below.
+  try { scanClaudeSessions(); } catch { /* best-effort */ }
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
